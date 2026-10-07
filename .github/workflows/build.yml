@@ -1,0 +1,38 @@
+name: APK Derle
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Derle
+        shell: bash
+        run: gradle assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
+
+      - name: Hata ozeti
+        if: failure()
+        shell: bash
+        run: |
+          { grep -E "^e: |error:|What went wrong|Could not|Execution failed|FAILURE|Unresolved|not found|Duplicate class|Caused by|Found in modules" build.log | head -40; echo "----- SON SATIRLAR -----"; tail -25 build.log; } > summary.txt || true
+          MSG=$(sed 's/%/%25/g' summary.txt | awk '{printf "%s%%0A", $0}')
+          echo "::error title=Gradle hata ozeti::$MSG"
+
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: KopruAcici-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
