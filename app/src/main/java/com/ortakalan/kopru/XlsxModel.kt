@@ -8,13 +8,13 @@ object TextTools {
 }
 
 /** kind: 0 = metin, 1 = sayı/tarih, 2 = mantıksal/hata (ortalanır). text zaten Excel biçimiyle biçimlendirilmiştir. */
-class Cell(val col: Int, val text: String, val style: Int, val kind: Int, val link: String?)
+class Cell(val col: Int, val text: String, val style: Int, val kind: Int, var link: String?)
 
 class RowData(
     val number: Int,
     val heightPx: Float,
     val hidden: Boolean,
-    val cells: Array<Cell>
+    var cells: Array<Cell>
 ) {
     val searchKey: String by lazy {
         val sb = StringBuilder()

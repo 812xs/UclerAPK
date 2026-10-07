@@ -6,6 +6,7 @@
 
     <application
         android:allowBackup="false"
+        android:largeHeap="true"
         android:label="Köprü Açıcı"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
 

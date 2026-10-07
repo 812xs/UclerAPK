@@ -83,11 +83,11 @@ object XlsxReader {
 
             val p = open(zip, info.path) ?: throw IllegalArgumentException("Sayfa verisi okunamadı.")
 
-            class MCell(var text: String, var style: Int, var kind: Int, var link: String?)
-
-            val grid = TreeMap<Int, TreeMap<Int, MCell>>()
-            val rowHt = HashMap<Int, Float>()
-            val rowHidden = HashSet<Int>()
+            // Satırlar akış halinde okunur; her satır bitince kalıcı yapıya çevrilir (bellek tasarrufu).
+            val rowList = ArrayList<RowData>()
+            val rowCells = ArrayList<Cell>()
+            var curHt: Float? = null
+            var curHidden = false
             val colSpecs = ArrayList<FloatArray>()
             val merges = ArrayList<Merge>()
             val hyperRefs = ArrayList<Array<String?>>() // [ref, rid, location]
@@ -170,10 +170,11 @@ object XlsxReader {
                                 curRow = r ?: (autoRow + 1)
                                 autoRow = curRow
                                 lastCol = -1
+                                rowCells.clear()
                                 val ht = attr(p, "ht")?.toFloatOrNull()
-                                if (ht != null) rowHt[curRow] = ht * 96f / 72f
+                                curHt = if (ht != null) ht * 96f / 72f else null
                                 val hid = attr(p, "hidden")
-                                if (hid == "1" || hid == "true") rowHidden.add(curRow)
+                                curHidden = hid == "1" || hid == "true"
                             }
                             "c" -> {
                                 val ref = attr(p, "r")
@@ -242,9 +243,28 @@ object XlsxReader {
                                     }
                                 }
                                 val st = if (style < 0) 0 else style
-                                if (curRow in 1..1048576 && curCol in 0..16383 && (text.isNotEmpty() || st > 0)) {
-                                    grid.getOrPut(curRow) { TreeMap() }[curCol] = MCell(text, st, kind, null)
+                                if (curRow in 1..1048576 && curCol in 0..16383) {
+                                    // Değeri olmayan ve görünür bir etkisi (dolgu/kenarlık) olmayan hücreler saklanmaz.
+                                    val visual = st > 0 && (styles.getOrNull(st)?.let { hasVisual(it) } ?: false)
+                                    if (text.isNotEmpty() || visual) {
+                                        rowCells.add(Cell(curCol, text, st, kind, null))
+                                    }
                                 }
+                            }
+                            "row" -> {
+                                if (curRow in 1..1048576 && (rowCells.isNotEmpty() || curHt != null || curHidden)) {
+                                    var sorted = true
+                                    for (k in 1 until rowCells.size) {
+                                        if (rowCells[k].col <= rowCells[k - 1].col) {
+                                            sorted = false
+                                            break
+                                        }
+                                    }
+                                    if (!sorted) rowCells.sortBy { it.col }
+                                    val hgt = if (curHidden) 0f else (curHt ?: (defRowPt * 96f / 72f))
+                                    rowList.add(RowData(curRow, hgt, curHidden, rowCells.toTypedArray()))
+                                }
+                                rowCells.clear()
                             }
                         }
                     }
@@ -253,11 +273,34 @@ object XlsxReader {
             }
 
             // --- köprüleri hücrelere işle
+            val defaultRowPx = defRowPt * 96f / 72f
+            val rowMap = HashMap<Int, RowData>(rowList.size * 2 + 16)
+            for (rd in rowList) rowMap[rd.number] = rd
+
             fun setLink(r: Int, c: Int, target: String) {
                 if (r < 1 || r > 1048576 || c < 0 || c > 16383 || target.isBlank()) return
-                val row = grid.getOrPut(r) { TreeMap() }
-                val mc = row.getOrPut(c) { MCell("", 0, 0, null) }
-                mc.link = target
+                var rd = rowMap[r]
+                if (rd == null) {
+                    rd = RowData(r, defaultRowPx, false, emptyArray<Cell>())
+                    rowMap[r] = rd
+                    rowList.add(rd)
+                }
+                val ex = rd.cellAt(c)
+                if (ex != null) {
+                    ex.link = target
+                } else {
+                    val old = rd.cells
+                    val arr = arrayOfNulls<Cell>(old.size + 1)
+                    var pos = 0
+                    while (pos < old.size && old[pos].col < c) {
+                        arr[pos] = old[pos]
+                        pos++
+                    }
+                    arr[pos] = Cell(c, "", 0, 0, target)
+                    for (k in pos until old.size) arr[k + 1] = old[k]
+                    @Suppress("UNCHECKED_CAST")
+                    rd.cells = arr as Array<Cell>
+                }
             }
 
             var guard = 0
@@ -279,35 +322,18 @@ object XlsxReader {
             for (t in formulaLinks) setLink(t.first, t.second, t.third)
 
             // --- boyutlar
-            var maxCol = 0
+            rowList.sortBy { it.number }
             var lastRow = frozenRows
-            for ((r, cols) in grid) {
-                if (r > lastRow) lastRow = r
-                if (cols.isNotEmpty() && cols.lastKey() > maxCol) maxCol = cols.lastKey()
+            var maxCol = 0
+            for (rd in rowList) {
+                if (rd.number > lastRow) lastRow = rd.number
+                val cs = rd.cells
+                if (cs.isNotEmpty() && cs[cs.size - 1].col > maxCol) maxCol = cs[cs.size - 1].col
             }
             val colCount = maxOf(maxCol + 3, 12)
 
-            val defaultRowPx = defRowPt * 96f / 72f
             val rowsByNumber = arrayOfNulls<RowData>(lastRow + 1)
-            for ((r, cols) in grid) {
-                val cells = ArrayList<Cell>(cols.size)
-                for ((c, mc) in cols) cells.add(Cell(c, mc.text, mc.style, mc.kind, mc.link))
-                val hidden = rowHidden.contains(r)
-                val h = if (hidden) 0f else (rowHt[r] ?: defaultRowPx)
-                rowsByNumber[r] = RowData(r, h, hidden, cells.toTypedArray())
-            }
-            val none = emptyArray<Cell>()
-            for ((r, ht) in rowHt) {
-                if (r in 1..lastRow && rowsByNumber[r] == null) {
-                    val hidden = rowHidden.contains(r)
-                    rowsByNumber[r] = RowData(r, if (hidden) 0f else ht, hidden, none)
-                }
-            }
-            for (r in rowHidden) {
-                if (r in 1..lastRow && rowsByNumber[r] == null) {
-                    rowsByNumber[r] = RowData(r, 0f, true, none)
-                }
-            }
+            for (rd in rowList) rowsByNumber[rd.number] = rd
 
             val defaultW = defColW?.let { it * 7f } ?: 64f
             val widths = FloatArray(colCount) { defaultW }
@@ -330,6 +356,10 @@ object XlsxReader {
             )
         }
     }
+
+    /** Dolgusu veya kenarlığı olan hücre, değeri boş olsa bile ekranda görünür. */
+    private fun hasVisual(x: XfStyle): Boolean =
+        x.fillColor != 0 || x.left != null || x.right != null || x.top != null || x.bottom != null
 
     // ---------------------------------------------------------------- yardımcılar (XML)
 
