@@ -98,7 +98,7 @@ class GridView(context: Context) : View(context) {
 
     // ------------------------------------------------------------------ veri
 
-    fun setData(sd: SheetData) {
+    fun setData(sd: SheetData, keepPosition: Boolean = false) {
         data = sd
         colCount = sd.colWidthsPx.size
         colLeft = FloatArray(colCount + 1)
@@ -124,16 +124,18 @@ class GridView(context: Context) : View(context) {
         }
         val digits = sd.lastRow.toString().length
         gutterW = (digits * 8f + 18f) * dens
-        panX = 0f
-        panY = 0f
-        selRow = 0
-        selCol = -1
+        if (!keepPosition) {
+            panX = 0f
+            panY = 0f
+            selRow = 0
+            selCol = -1
+        }
         rebuildRows()
     }
 
-    fun setFilter(w: List<String>) {
+    fun setFilter(w: List<String>, resetScroll: Boolean = true) {
         words = w
-        panY = 0f
+        if (resetScroll) panY = 0f
         rebuildRows()
     }
 

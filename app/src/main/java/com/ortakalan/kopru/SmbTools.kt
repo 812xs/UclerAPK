@@ -129,6 +129,130 @@ object SmbTools {
         return out
     }
 
+    // ------------------------------------------------------------------ sunucu gezinme / izleme
+
+    class Entry(val name: String, val isDir: Boolean)
+
+    fun openContext(user: String, pass: String, domain: String): CIFSContext = newContext(user, pass, domain)
+
+    fun ensureSlash(url: String): String = if (url.endsWith("/")) url else "$url/"
+
+    /** "smb://sunucu/a/b/" -> "smb://sunucu/a/"; kök adreste null. */
+    fun parentUrl(url: String): String? {
+        val body = url.trimEnd('/').removePrefix("smb://")
+        val i = body.lastIndexOf('/')
+        if (i < 0) return null
+        return "smb://" + body.substring(0, i + 1)
+    }
+
+    private fun <T> withUrls(url: String, block: (String) -> T): T {
+        var last: Exception? = null
+        for (u in linkedSetOf(url, url.replace(" ", "%20"))) {
+            try {
+                return block(u)
+            } catch (e: Cancelled) {
+                throw e
+            } catch (e: SmbAuthException) {
+                throw e
+            } catch (e: Exception) {
+                last = e
+            }
+        }
+        throw last ?: IllegalStateException("Bilinmeyen hata")
+    }
+
+    /** Klasörün içeriği: alt klasörler ve Excel dosyaları (klasörler önce). */
+    fun list(url: String, ctx: CIFSContext): List<Entry> = withUrls(ensureSlash(url)) { u ->
+        val dir = SmbFile(u, ctx)
+        val out = ArrayList<Entry>()
+        val arr = dir.listFiles() ?: emptyArray()
+        for (c in arr) {
+            val raw = c.name
+            val isDir = raw.endsWith("/")
+            val n = raw.trimEnd('/')
+            if (n.isEmpty() || n.endsWith("$")) continue
+            if (!isDir) {
+                val l = n.lowercase()
+                if (!(l.endsWith(".xlsx") || l.endsWith(".xlsm") || l.endsWith(".xltx"))) continue
+            }
+            out.add(Entry(n, isDir))
+        }
+        out.sortWith(compareByDescending<Entry> { it.isDir }.thenBy { it.name.lowercase() })
+        out
+    }
+
+    /** [son değişiklik zamanı, boyut]. Dosya yoksa/erişilemezse hata fırlatır. */
+    fun stat(url: String, ctx: CIFSContext): LongArray = withUrls(url) { u ->
+        val f = SmbFile(u, ctx)
+        val lm = f.lastModified()
+        val len = f.length()
+        if (lm == 0L && len == 0L && !f.exists()) throw IllegalStateException("object_name_not_found")
+        longArrayOf(lm, len)
+    }
+
+    /**
+     * Dosyayı tam olarak dest'e indirir ve indirmeden ÖNCE okunan [zaman, boyut] değerini döndürür.
+     * Excel kaydederken dosya kısa süre kilitli/eksik olabilir; bu yüzden birkaç kez denenir.
+     */
+    fun downloadToRetry(url: String, ctx: CIFSContext, dest: File, cancel: AtomicBoolean): LongArray {
+        var last: Exception? = null
+        for (attempt in 1..3) {
+            try {
+                return withUrls(url) { u ->
+                    val f = SmbFile(u, ctx)
+                    val st = longArrayOf(f.lastModified(), f.length())
+                    f.getInputStream().use { ins ->
+                        FileOutputStream(dest).use { os ->
+                            val buf = ByteArray(64 * 1024)
+                            while (true) {
+                                if (cancel.get()) throw Cancelled()
+                                val n = ins.read(buf)
+                                if (n < 0) break
+                                os.write(buf, 0, n)
+                            }
+                        }
+                    }
+                    st
+                }
+            } catch (e: Cancelled) {
+                throw e
+            } catch (e: SmbAuthException) {
+                throw e
+            } catch (e: Exception) {
+                last = e
+                if (attempt < 3) Thread.sleep(1500)
+            }
+        }
+        throw last ?: IllegalStateException("Bilinmeyen hata")
+    }
+
+    /** Arka plan izleyicinin tek bağlantıyı yeniden kullanması için küçük oturum. Tek iş parçacığından kullanılır. */
+    class Session {
+        private var ctx: CIFSContext? = null
+        private var key = ""
+
+        fun stat(url: String, user: String, pass: String, domain: String): LongArray {
+            val k = "$user|$pass|$domain"
+            var c = ctx
+            if (c == null || key != k) {
+                close()
+                c = openContext(user, pass, domain)
+                ctx = c
+                key = k
+            }
+            return SmbTools.stat(url, c)
+        }
+
+        fun close() {
+            try {
+                ctx?.close()
+            } catch (e: Throwable) {
+                // kapatma hatası önemsiz
+            }
+            ctx = null
+        }
+    }
+
     /** 1 saatten eski indirilmiş dosyaları siler. */
     fun cleanOld(dir: File) {
         val limit = System.currentTimeMillis() - 60L * 60L * 1000L

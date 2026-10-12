@@ -35,6 +35,15 @@ Derleme kırmızı hata verirse: işe tıklayın, hata satırlarını kopyalayı
    PDF görüntüleyicide açılır. Üstteki kutudan arama yapabilirsiniz.
 4. Birden fazla sayfa varsa **Sayfa** düğmesiyle değiştirin.
 
+## C) Dosya değişince uyarı (anlık takip)
+
+- **Aç > Sunucudan aç** ile Excel dosyasını doğrudan ağdaki paylaşımdan seçin (klasörlerde gezinebilirsiniz).
+- Uygulama açıkken dosyayı her 3 saniyede bir kontrol eder. Uzak masaüstünde dosya kaydedilince
+  üstte sarı bir uyarı çıkar: "Seçili dosyanız uzak masaüstü tarafından güncellendi...".
+  Altındaki **Yenile** düğmesi aynı dosyayı yeniden indirip açar (sayfa ve kaydırma konumu korunur).
+- **Aç > Tabletteki dosyalardan aç** ile seçilen dosya yalnızca kaynağı değişikliği bildiriyorsa izlenir;
+  izlenemiyorsa uygulama bunu söyler.
+
 ## Notlar
 
 - Yalnızca `.xlsx` / `.xlsm` desteklenir. Eski `.xls` ise Excel'de "Farklı Kaydet" ile .xlsx yapın.
