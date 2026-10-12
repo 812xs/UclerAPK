@@ -12,9 +12,13 @@ class Cell(val col: Int, val text: String, val style: Int, val kind: Int, var li
 
 class RowData(
     val number: Int,
-    val heightPx: Float,
+    var heightPx: Float,
     val hidden: Boolean,
-    var cells: Array<Cell>
+    var cells: Array<Cell>,
+    /** Satırın tamamına uygulanan stil (customFormat). 0 = yok. */
+    val style: Int = 0,
+    /** Dosyada satır yüksekliği yazılmamış: Excel açılışta içeriğe göre otomatik ayarlar. */
+    val autoHeight: Boolean = false
 ) {
     val searchKey: String by lazy {
         val sb = StringBuilder()
@@ -76,5 +80,8 @@ class SheetData(
     val frozenRows: Int,
     val frozenCols: Int,
     val showGrid: Boolean,
-    val styles: List<XfStyle>
+    val styles: List<XfStyle>,
+    /** Sütun bazlı varsayılan stiller (boş hücrelerin dolgu/kenarlığı için). */
+    val colStyles: IntArray,
+    val hasDefaultStyles: Boolean
 )

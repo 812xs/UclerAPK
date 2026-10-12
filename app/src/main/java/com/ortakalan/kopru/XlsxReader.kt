@@ -1,6 +1,10 @@
 package com.ortakalan.kopru
 
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Typeface
+import android.text.StaticLayout
+import android.text.TextPaint
 import android.util.Xml
 import androidx.core.graphics.ColorUtils
 import org.xmlpull.v1.XmlPullParser
@@ -21,6 +25,12 @@ object XlsxReader {
 
     private val HYPERLINK_RE = Regex(
         "HYPERLINK\\s*\\(\\s*\"((?:[^\"]|\"\")*)\"",
+        RegexOption.IGNORE_CASE
+    )
+
+    // =HYPERLINK("adres";"görünen ad") — önbellekte değer yoksa görünen ad gösterilir
+    private val HYPERLINK_LABEL_RE = Regex(
+        "HYPERLINK\\s*\\(\\s*\"(?:[^\"]|\"\")*\"\\s*[,;]\\s*\"((?:[^\"]|\"\")*)\"",
         RegexOption.IGNORE_CASE
     )
 
@@ -88,7 +98,9 @@ object XlsxReader {
             val rowCells = ArrayList<Cell>()
             var curHt: Float? = null
             var curHidden = false
+            var curRowStyle = 0
             val colSpecs = ArrayList<FloatArray>()
+            val colStyleSpecs = ArrayList<IntArray>() // [min, max, stil]
             val merges = ArrayList<Merge>()
             val hyperRefs = ArrayList<Array<String?>>() // [ref, rid, location]
             val formulaLinks = ArrayList<Triple<Int, Int, String>>()
@@ -133,6 +145,8 @@ object XlsxReader {
                                 if (mn != null && mx != null) {
                                     val px = if (hid == "1" || hid == "true") 0f else if (w != null) w * 7f else -1f
                                     if (px >= 0f) colSpecs.add(floatArrayOf(mn.toFloat(), mx.toFloat(), px))
+                                    val cst = attr(p, "style")?.toIntOrNull()
+                                    if (cst != null && cst > 0) colStyleSpecs.add(intArrayOf(mn, mx, cst))
                                 }
                             }
                             "sheetView" -> {
@@ -175,6 +189,8 @@ object XlsxReader {
                                 curHt = if (ht != null) ht * 96f / 72f else null
                                 val hid = attr(p, "hidden")
                                 curHidden = hid == "1" || hid == "true"
+                                val cf = attr(p, "customFormat")
+                                curRowStyle = if (cf == "1" || cf == "true") (attr(p, "s")?.toIntOrNull() ?: 0) else 0
                             }
                             "c" -> {
                                 val ref = attr(p, "r")
@@ -242,17 +258,25 @@ object XlsxReader {
                                         )
                                     }
                                 }
+                                // Önbellekte değeri olmayan HYPERLINK formülünde görünen adı göster
+                                var shown = text
+                                if (shown.isEmpty() && f.isNotEmpty()) {
+                                    val lm = HYPERLINK_LABEL_RE.find(f.toString())
+                                    if (lm != null) shown = lm.groupValues[1].replace("\"\"", "\"")
+                                }
                                 val st = if (style < 0) 0 else style
                                 if (curRow in 1..1048576 && curCol in 0..16383) {
                                     // Değeri olmayan ve görünür bir etkisi (dolgu/kenarlık) olmayan hücreler saklanmaz.
                                     val visual = st > 0 && (styles.getOrNull(st)?.let { hasVisual(it) } ?: false)
-                                    if (text.isNotEmpty() || visual) {
-                                        rowCells.add(Cell(curCol, text, st, kind, null))
+                                    if (shown.isNotEmpty() || visual) {
+                                        rowCells.add(Cell(curCol, shown, st, kind, null))
                                     }
                                 }
                             }
                             "row" -> {
-                                if (curRow in 1..1048576 && (rowCells.isNotEmpty() || curHt != null || curHidden)) {
+                                if (curRow in 1..1048576 &&
+                                    (rowCells.isNotEmpty() || curHt != null || curHidden || curRowStyle > 0)
+                                ) {
                                     var sorted = true
                                     for (k in 1 until rowCells.size) {
                                         if (rowCells[k].col <= rowCells[k - 1].col) {
@@ -262,7 +286,12 @@ object XlsxReader {
                                     }
                                     if (!sorted) rowCells.sortBy { it.col }
                                     val hgt = if (curHidden) 0f else (curHt ?: (defRowPt * 96f / 72f))
-                                    rowList.add(RowData(curRow, hgt, curHidden, rowCells.toTypedArray()))
+                                    rowList.add(
+                                        RowData(
+                                            curRow, hgt, curHidden, rowCells.toTypedArray(),
+                                            curRowStyle, curHt == null && !curHidden
+                                        )
+                                    )
                                 }
                                 rowCells.clear()
                             }
@@ -343,6 +372,31 @@ object XlsxReader {
                 for (c in from..to) widths[c] = s[2]
             }
 
+            // Sütun bazlı varsayılan stiller (tüm sütuna uygulanan dolgu/kenarlık)
+            val colStyles = IntArray(colCount)
+            var hasDefault = false
+            for (s in colStyleSpecs) {
+                val xs = styles.getOrNull(s[2]) ?: continue
+                if (!hasVisual(xs)) continue
+                val from = maxOf(s[0] - 1, 0)
+                val to = minOf(s[1] - 1, colCount - 1)
+                for (c in from..to) {
+                    colStyles[c] = s[2]
+                    hasDefault = true
+                }
+            }
+            for (rd in rowList) {
+                if (rd.style > 0) {
+                    val xs = styles.getOrNull(rd.style)
+                    if (xs != null && hasVisual(xs)) {
+                        hasDefault = true
+                        break
+                    }
+                }
+            }
+
+            autoFitRows(rowsByNumber, widths, styles, merges, defaultRowPx)
+
             SheetData(
                 rowsByNumber,
                 lastRow,
@@ -352,8 +406,54 @@ object XlsxReader {
                 minOf(frozenRows, lastRow),
                 minOf(frozenCols, colCount),
                 showGrid,
-                styles
+                styles,
+                colStyles,
+                hasDefault
             )
+        }
+    }
+
+    /**
+     * Satır yüksekliği dosyada yazılmamışsa Excel açılışta içeriğe göre otomatik ayarlar
+     * (satır kaydırmalı uzun metin, büyük yazı tipi). Aynısını burada yapıyoruz; yoksa metin kesik görünür.
+     * Birleştirilmiş hücreler Excel'de de otomatik yükseklikte sayılmaz.
+     */
+    private fun autoFitRows(
+        rows: Array<RowData?>,
+        widths: FloatArray,
+        styles: List<XfStyle>,
+        merges: List<Merge>,
+        defaultRowPx: Float
+    ) {
+        val anchors = HashSet<Long>()
+        for (m in merges) anchors.add(m.r1.toLong() * 20000L + m.c1)
+        val tp = TextPaint(Paint.ANTI_ALIAS_FLAG)
+        val maxPx = 409f * 96f / 72f // Excel'in en büyük satır yüksekliği
+
+        for (rd in rows) {
+            if (rd == null || !rd.autoHeight || rd.hidden) continue
+            var need = defaultRowPx
+            for (cell in rd.cells) {
+                if (cell.text.isEmpty()) continue
+                if (anchors.contains(rd.number.toLong() * 20000L + cell.col)) continue
+                val st = styles.getOrNull(cell.style) ?: XfStyle.DEFAULT
+                val lineH = st.sizePt * 1.36f * 96f / 72f
+                var h = lineH
+                if (st.wrap && cell.kind == 0 && cell.col < widths.size) {
+                    val w = (widths[cell.col] - 6f - st.indent * 9f).toInt()
+                    if (w > 8) {
+                        tp.textSize = st.sizePt * 96f / 72f
+                        tp.typeface = if (st.bold) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+                        val layout = StaticLayout.Builder
+                            .obtain(cell.text, 0, cell.text.length, tp, w)
+                            .setIncludePad(false)
+                            .build()
+                        h = layout.lineCount * lineH
+                    }
+                }
+                if (h > need) need = h
+            }
+            rd.heightPx = minOf(need, maxPx)
         }
     }
 

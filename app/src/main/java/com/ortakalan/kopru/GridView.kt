@@ -37,6 +37,10 @@ class GridView(context: Context) : View(context) {
     private var rowIndex = IntArray(1)
     private var frozenRowCount = 0
     private var frozenCols = 0
+    private var baseFrozenRows = 0
+    private var baseFrozenCols = 0
+    private var sortedMerges: List<Merge> = emptyList()
+    private var maxMergeSpan = 0
     private var gutterW = 40f * dens
     private val headerH = 24f * dens
 
@@ -99,7 +103,12 @@ class GridView(context: Context) : View(context) {
         colCount = sd.colWidthsPx.size
         colLeft = FloatArray(colCount + 1)
         for (c in 0 until colCount) colLeft[c + 1] = colLeft[c] + sd.colWidthsPx[c]
-        frozenCols = sd.frozenCols.coerceIn(0, colCount)
+        baseFrozenCols = sd.frozenCols.coerceIn(0, colCount)
+        frozenCols = baseFrozenCols
+        sortedMerges = sd.merges.sortedBy { it.r1 }
+        var span = 0
+        for (m in sd.merges) if (m.r2 - m.r1 > span) span = m.r2 - m.r1
+        maxMergeSpan = span
         mergeAt = HashMap()
         covered = HashSet()
         for (m in sd.merges) {
@@ -146,6 +155,7 @@ class GridView(context: Context) : View(context) {
             if (isHead) fr++
         }
         visRows = tmp.copyOf(n)
+        baseFrozenRows = fr
         frozenRowCount = fr
         rowTop = FloatArray(n + 1)
         rowIndex = IntArray(d.lastRow + 2) { -1 }
@@ -155,8 +165,29 @@ class GridView(context: Context) : View(context) {
             rowTop[i + 1] = rowTop[i] + h
             rowIndex[rn] = i
         }
+        applyFrozenCaps()
         clampPan()
         invalidate()
+    }
+
+    /**
+     * Dondurulmuş bölge ekranın çok büyük kısmını kaplarsa kalan sütunlara/satırlara ulaşılamaz
+     * (tablette ekran küçük). Bu yüzden dondurulmuş alan yatayda %50, dikeyde %40 ile sınırlanır.
+     */
+    private fun applyFrozenCaps() {
+        val u = dens * zoom
+        val availW = width - gutterW
+        val availH = height - headerH
+        var fc = baseFrozenCols
+        if (availW > 0f) {
+            while (fc > 0 && colLeft[fc] * u > availW * 0.5f) fc--
+        }
+        frozenCols = fc
+        var fr = baseFrozenRows
+        if (availH > 0f) {
+            while (fr > 0 && fr < rowTop.size && rowTop[fr] * u > availH * 0.4f) fr--
+        }
+        frozenRowCount = fr
     }
 
     // ------------------------------------------------------------------ geometri
@@ -178,6 +209,7 @@ class GridView(context: Context) : View(context) {
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
+        applyFrozenCaps()
         clampPan()
     }
 
@@ -313,23 +345,56 @@ class GridView(context: Context) : View(context) {
         val items = ArrayList<Item>()
         for (i in r0..r1) {
             val rn = visRows[i]
-            val rd = d.rowsByNumber[rn] ?: continue
-            for (cell in rd.cells) {
-                if (cell.col < c0) continue
-                if (cell.col > c1) break
-                val k = key(rn, cell.col)
-                if (covered.contains(k)) continue
-                items.add(Item(cell, rn, i, mergeAt[k]))
+            val rd = d.rowsByNumber[rn]
+            if (rd != null) {
+                for (cell in rd.cells) {
+                    if (cell.col > c1) break
+                    val k = key(rn, cell.col)
+                    if (covered.contains(k) || mergeAt.containsKey(k)) continue
+                    if (cell.col < c0) {
+                        // Soldaki hücrenin taşan metni görünür alana girebilir
+                        if (cell.col < c0 - 40 || cell.text.isEmpty() || cell.kind != 0) continue
+                        val sx0 = styleOf(d, cell.style)
+                        if (sx0.wrap || sx0.hAlign == 2 || sx0.hAlign == 3) continue
+                    }
+                    items.add(Item(cell, rn, i, null))
+                }
+            }
+            // Satır/sütunun tamamına uygulanmış dolgu ve kenarlıklar (hücre kaydı olmayan boş hücreler)
+            if (d.hasDefaultStyles) {
+                val rs = rd?.style ?: 0
+                val lastC = min(c1, colCount - 1)
+                for (c in c0..lastC) {
+                    val k = key(rn, c)
+                    if (covered.contains(k) || mergeAt.containsKey(k)) continue
+                    if (rd != null && rd.cellAt(c) != null) continue
+                    val sid = if (rs > 0) rs else d.colStyles.getOrElse(c) { 0 }
+                    if (sid <= 0) continue
+                    val xs = d.styles.getOrNull(sid) ?: continue
+                    if (!hasVisualStyle(xs)) continue
+                    items.add(Item(Cell(c, "", sid, 0, null), rn, i, null))
+                }
             }
         }
-        for (m in d.merges) {
+
+        // Birleştirilmiş hücreler: görünür alanla kesişenlerin hepsi (sol üst hücre kayıtlı olmasa da)
+        val rnLo = visRows[r0]
+        val rnHi = visRows[r1]
+        var lo = 0
+        var hi = sortedMerges.size
+        val target = rnLo - maxMergeSpan
+        while (lo < hi) {
+            val mid = (lo + hi) ushr 1
+            if (sortedMerges[mid].r1 < target) lo = mid + 1 else hi = mid
+        }
+        for (k in lo until sortedMerges.size) {
+            val m = sortedMerges[k]
+            if (m.r1 > rnHi) break
+            if (m.r2 < rnLo) continue
+            if (m.c2 < c0 || m.c1 > c1) continue
             val idx = rowIndex.getOrElse(m.r1) { -1 }
             if (idx < 0) continue
-            if (idx in r0..r1 && m.c1 in c0..c1) continue
-            val lastIdx = lastVisIdxAtOrBefore(m.r2)
-            if (lastIdx < r0 || idx > r1) continue
-            if (m.c2 < c0 || m.c1 > c1) continue
-            val cell = d.rowsByNumber[m.r1]?.cellAt(m.c1) ?: continue
+            val cell = d.rowsByNumber.getOrNull(m.r1)?.cellAt(m.c1) ?: Cell(m.c1, "", 0, 0, null)
             items.add(Item(cell, m.r1, idx, m))
         }
 
@@ -348,9 +413,12 @@ class GridView(context: Context) : View(context) {
         // --- 2) dolgular
         for (it in items) {
             val st = styleOf(d, it.cell.style)
-            if (st.fillColor != 0) {
+            var fill = st.fillColor
+            val mg = it.merge
+            if (fill == 0 && mg != null) fill = mergedFill(d, mg)
+            if (fill != 0) {
                 cellRect(it, ax, ay, u, rf)
-                fillPaint.color = st.fillColor
+                fillPaint.color = fill
                 canvas.drawRect(rf, fillPaint)
             }
         }
@@ -358,24 +426,36 @@ class GridView(context: Context) : View(context) {
         // --- 3) kenarlıklar
         for (it in items) {
             val st = styleOf(d, it.cell.style)
-            if (st.left == null && st.right == null && st.top == null && st.bottom == null) continue
+            val mg = it.merge
+            var l: BorderSide? = st.left
+            var r: BorderSide? = st.right
+            var t: BorderSide? = st.top
+            var b: BorderSide? = st.bottom
+            if (mg != null) {
+                // Birleştirilmiş hücrede kenarlıklar dış kenardaki hücrelerin stilinde saklanır
+                val a0 = styleAt(d, mg.r1, mg.c1)
+                val tr = styleAt(d, mg.r1, mg.c2)
+                val bl = styleAt(d, mg.r2, mg.c1)
+                val br = styleAt(d, mg.r2, mg.c2)
+                l = a0.left ?: bl.left
+                r = tr.right ?: br.right ?: a0.right
+                t = a0.top ?: tr.top
+                b = bl.bottom ?: br.bottom ?: a0.bottom
+            }
+            if (l == null && r == null && t == null && b == null) continue
             cellRect(it, ax, ay, u, rf)
-            val l = st.left
             if (l != null) {
                 setBorder(l)
                 canvas.drawLine(rf.left, rf.top, rf.left, rf.bottom, borderPaint)
             }
-            val r = st.right
             if (r != null) {
                 setBorder(r)
                 canvas.drawLine(rf.right, rf.top, rf.right, rf.bottom, borderPaint)
             }
-            val t = st.top
             if (t != null) {
                 setBorder(t)
                 canvas.drawLine(rf.left, rf.top, rf.right, rf.top, borderPaint)
             }
-            val b = st.bottom
             if (b != null) {
                 setBorder(b)
                 canvas.drawLine(rf.left, rf.bottom, rf.right, rf.bottom, borderPaint)
@@ -403,6 +483,26 @@ class GridView(context: Context) : View(context) {
         }
 
         canvas.restore()
+    }
+
+    private fun hasVisualStyle(x: XfStyle): Boolean =
+        x.fillColor != 0 || x.left != null || x.right != null || x.top != null || x.bottom != null
+
+    /** Hücrenin gerçek stili: kendi stili, yoksa satır, yoksa sütun varsayılanı. */
+    private fun styleAt(d: SheetData, r: Int, c: Int): XfStyle {
+        val rd = d.rowsByNumber.getOrNull(r)
+        val cell = rd?.cellAt(c)
+        if (cell != null) return styleOf(d, cell.style)
+        val rs = rd?.style ?: 0
+        val sid = if (rs > 0) rs else d.colStyles.getOrElse(c) { 0 }
+        return if (sid > 0) styleOf(d, sid) else XfStyle.DEFAULT
+    }
+
+    private fun mergedFill(d: SheetData, m: Merge): Int {
+        var f = styleAt(d, m.r1, m.c2).fillColor
+        if (f == 0) f = styleAt(d, m.r2, m.c1).fillColor
+        if (f == 0) f = styleAt(d, m.r2, m.c2).fillColor
+        return f
     }
 
     private fun setBorder(b: BorderSide) {
@@ -630,6 +730,7 @@ class GridView(context: Context) : View(context) {
             panX = (panX + fxs) * ratio - fxs
             panY = (panY + fys) * ratio - fys
             zoom = nz
+            applyFrozenCaps()
             clampPan()
             invalidate()
             return true
