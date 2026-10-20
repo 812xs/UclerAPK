@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.text.Layout
@@ -25,6 +26,12 @@ class GridView(context: Context) : View(context) {
 
     var onLinkTap: ((Cell) -> Unit)? = null
     var onCellSelected: ((String, String) -> Unit)? = null
+
+    /** Başlık hücresindeki filtre düğmesine dokunuldu (mutlak sütun numarası). */
+    var onFilterTap: ((Int) -> Unit)? = null
+
+    /** Filtre ölçütleri değişti (ölçüt eklendi/kaldırıldı/temizlendi). */
+    var onFilterChanged: (() -> Unit)? = null
 
     private var data: SheetData? = null
     private val dens = resources.displayMetrics.density
@@ -49,6 +56,15 @@ class GridView(context: Context) : View(context) {
     private var selRow = 0
     private var selCol = -1
     private var words: List<String> = emptyList()
+
+    // ---- sütun filtreleri (Excel'deki otomatik filtre)
+    private var filterInfo: FilterInfo? = null
+    private val crit = HashMap<Int, ColCriteria>()
+
+    /** false: dosyadaki gizli satırlar olduğu gibi gösterilir; kullanıcı filtreye dokununca true olur. */
+    private var engineMode = false
+    private var dataShown = 0
+    private var dataTotal = 0
 
     private var mergeAt = HashMap<Long, Merge>()
     private var covered = HashSet<Long>()
@@ -84,6 +100,15 @@ class GridView(context: Context) : View(context) {
         strokeWidth = 2f
     }
     private val rf = RectF()
+
+    private val btnFill = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val btnStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 1f * dens
+        color = 0xFF9AA0A6.toInt()
+    }
+    private val btnIcon = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val btnPath = Path()
 
     private val typefaces = arrayOf(
         Typeface.create(Typeface.DEFAULT, Typeface.NORMAL),
@@ -122,6 +147,22 @@ class GridView(context: Context) : View(context) {
                 }
             }
         }
+        val oldF = filterInfo
+        val newF = sd.filter
+        filterInfo = newF
+        val sameFilter = keepPosition && oldF != null && newF != null && !oldF.inferred &&
+            oldF.headerRow == newF.headerRow && oldF.firstCol == newF.firstCol && oldF.lastCol == newF.lastCol
+        if (!sameFilter) {
+            crit.clear()
+            engineMode = false
+            if (newF != null) crit.putAll(newF.saved)
+            if (keepPosition && oldF != null && oldF.inferred && newF == null) {
+                // yenilemede, kullanıcının eklediği tahmini filtre korunur
+                val inf = buildInferred(sd)
+                filterInfo = inf
+                if (inf != null) engineMode = true
+            }
+        }
         val digits = sd.lastRow.toString().length
         gutterW = (digits * 8f + 18f) * dens
         if (!keepPosition) {
@@ -141,21 +182,133 @@ class GridView(context: Context) : View(context) {
 
     fun shownRowCount(): Int = max(0, visRows.size - frozenRowCount)
 
+    // ------------------------------------------------------------------ filtre API
+
+    fun hasFilter(): Boolean = filterInfo != null
+
+    fun activeFilterCount(): Int {
+        var n = 0
+        for (c in crit.values) if (c.isActive()) n++
+        return n
+    }
+
+    fun criteriaOf(col: Int): ColCriteria? = crit[col]
+
+    fun headerText(col: Int): String {
+        val f = filterInfo ?: return ""
+        val t = data?.rowsByNumber?.getOrNull(f.headerRow)?.cellAt(col)?.text ?: ""
+        return t.replace('\n', ' ').trim()
+    }
+
+    fun columnLetter(col: Int): String = colName(col)
+
+    /** [gösterilen veri satırı, toplam veri satırı]; filtre yoksa null. */
+    fun filterCounts(): IntArray? = if (filterInfo == null) null else intArrayOf(dataShown, dataTotal)
+
+    /** Bir sütunun filtre listesi (diğer sütunların ölçütlerine göre daralmış, Excel gibi). */
+    fun collectValues(col: Int): List<ValueItem> {
+        val d = data ?: return emptyList()
+        val f = filterInfo ?: return emptyList()
+        return FilterEngine.collect(d.rowsByNumber, f, col, crit)
+    }
+
+    fun setCriteria(col: Int, c: ColCriteria?) {
+        if (c == null || !c.isActive()) crit.remove(col) else crit[col] = c
+        engineMode = true
+        rebuildRows()
+        onFilterChanged?.invoke()
+    }
+
+    fun clearAllFilters() {
+        crit.clear()
+        engineMode = true
+        rebuildRows()
+        onFilterChanged?.invoke()
+    }
+
+    /** Dosyada filtre tanımı yoksa başlık satırını tahmin ederek filtre düğmeleri ekler. */
+    fun enableInferredFilter(): Boolean {
+        val d = data ?: return false
+        val inf = buildInferred(d) ?: return false
+        filterInfo = inf
+        crit.clear()
+        engineMode = true
+        rebuildRows()
+        onFilterChanged?.invoke()
+        return true
+    }
+
+    private fun buildInferred(d: SheetData): FilterInfo? {
+        if (d.lastRow < 2) return null
+        // aday başlık satırları: sabit panel varsa onun satırları (alttan yukarı), yoksa baştan
+        val candidates = ArrayList<Int>()
+        if (d.frozenRows > 0) {
+            for (r in d.frozenRows downTo 1) candidates.add(r)
+        } else {
+            for (r in 1..min(d.lastRow, 50)) candidates.add(r)
+        }
+        var header = -1
+        for (r in candidates) {
+            val rd = d.rowsByNumber.getOrNull(r) ?: continue
+            var cnt = 0
+            for (c in rd.cells) if (c.text.isNotEmpty()) cnt++
+            if (cnt >= 2) {
+                header = r
+                break
+            }
+        }
+        if (header < 0) {
+            for (r in candidates) {
+                val rd = d.rowsByNumber.getOrNull(r) ?: continue
+                if (rd.cells.any { it.text.isNotEmpty() }) {
+                    header = r
+                    break
+                }
+            }
+        }
+        if (header < 1 || header >= d.lastRow) return null
+        val hr = d.rowsByNumber[header] ?: return null
+        var minC = Int.MAX_VALUE
+        var maxC = -1
+        for (c in hr.cells) {
+            if (c.text.isEmpty()) continue
+            if (c.col < minC) minC = c.col
+            if (c.col > maxC) maxC = c.col
+        }
+        if (maxC < 0) return null
+        return FilterInfo(header, minC, maxC, d.lastRow, emptyMap(), emptySet(), true)
+    }
+
     private fun rebuildRows() {
         val d = data ?: return
+        val f = filterInfo
+        val active = ArrayList<Pair<Int, ColCriteria>>()
+        if (engineMode) {
+            for ((c, cr) in crit) if (cr.isActive()) active.add(Pair(c, cr))
+        }
         val tmp = IntArray(d.lastRow + 1)
         var n = 0
         var fr = 0
+        var shown = 0
         for (rn in 1..d.lastRow) {
             val rd = d.rowsByNumber[rn]
-            if (rd != null && rd.hidden) continue
-            val isHead = rn <= d.frozenRows
-            val ok = isHead || words.isEmpty() || (rd != null && words.all { rd.searchKey.contains(it) })
+            val inRange = f != null && f.isDataRow(rn)
+            // dosyada gizli satırlar olduğu gibi gizli kalır; filtre bölgesinde ise filtre karar verir
+            if (rd != null && rd.hidden && !(engineMode && inRange)) continue
+            val frozenHead = rn <= d.frozenRows
+            var ok = frozenHead || (f != null && rn <= f.headerRow)
+            if (!ok) {
+                ok = words.isEmpty() || (rd != null && words.all { rd.searchKey.contains(it) })
+                if (ok && inRange && active.isNotEmpty()) ok = FilterEngine.passesAll(rd, active)
+            }
             if (!ok) continue
             tmp[n] = rn
             n++
-            if (isHead) fr++
+            if (frozenHead) fr++
+            if (inRange) shown++
         }
+        dataShown = shown
+        dataTotal = if (f == null) 0 else max(0, min(f.lastRow, d.lastRow) - f.headerRow)
         visRows = tmp.copyOf(n)
         baseFrozenRows = fr
         frozenRowCount = fr
@@ -472,6 +625,10 @@ class GridView(context: Context) : View(context) {
             drawText(canvas, d, u, it, st, ax)
         }
 
+        // --- filtre düğmeleri (başlık satırı)
+        val fi = filterInfo
+        if (fi != null) drawFilterButtons(canvas, fi, u, ax, ay, c0, c1, r0, r1)
+
         // --- 5) seçili hücre
         if (selCol >= 0 && selRow > 0) {
             val si = rowIndex.getOrElse(selRow) { -1 }
@@ -505,6 +662,51 @@ class GridView(context: Context) : View(context) {
         if (f == 0) f = styleAt(d, m.r2, m.c1).fillColor
         if (f == 0) f = styleAt(d, m.r2, m.c2).fillColor
         return f
+    }
+
+    private fun drawFilterButtons(
+        canvas: Canvas, f: FilterInfo, u: Float, ax: Float, ay: Float,
+        c0: Int, c1: Int, r0: Int, r1: Int
+    ) {
+        val hi = rowIndex.getOrElse(f.headerRow) { -1 }
+        if (hi < r0 || hi > r1) return
+        val from = max(c0, f.firstCol)
+        val to = min(c1, min(f.lastCol, colCount - 1))
+        for (c in from..to) {
+            if (!f.hasButton(c)) continue
+            val active = crit[c]?.isActive() == true
+            val cl = ax + colLeft[c] * u
+            val cr = ax + colLeft[c + 1] * u
+            val ct = ay + rowTop[hi] * u
+            val cb = ay + rowTop[hi + 1] * u
+            val sz = min((17f * dens * zoom).coerceIn(13f * dens, 26f * dens), min(cb - ct, cr - cl) - 2f * dens)
+            if (sz < 6f * dens) continue
+            val bx = cr - sz - 1.5f * dens
+            val by = cb - sz - 1.5f * dens
+            rf.set(bx, by, bx + sz, by + sz)
+            btnFill.color = if (active) 0xFF1A73E8.toInt() else Color.WHITE
+            canvas.drawRoundRect(rf, 3f * dens, 3f * dens, btnFill)
+            if (!active) canvas.drawRoundRect(rf, 3f * dens, 3f * dens, btnStroke)
+            btnPath.reset()
+            if (active) {
+                // dolu huni: filtre uygulanmış
+                btnIcon.color = Color.WHITE
+                btnPath.moveTo(bx + sz * 0.22f, by + sz * 0.25f)
+                btnPath.lineTo(bx + sz * 0.78f, by + sz * 0.25f)
+                btnPath.lineTo(bx + sz * 0.56f, by + sz * 0.52f)
+                btnPath.lineTo(bx + sz * 0.56f, by + sz * 0.78f)
+                btnPath.lineTo(bx + sz * 0.44f, by + sz * 0.70f)
+                btnPath.lineTo(bx + sz * 0.44f, by + sz * 0.52f)
+            } else {
+                // aşağı ok
+                btnIcon.color = 0xFF5F6368.toInt()
+                btnPath.moveTo(bx + sz * 0.27f, by + sz * 0.38f)
+                btnPath.lineTo(bx + sz * 0.73f, by + sz * 0.38f)
+                btnPath.lineTo(bx + sz * 0.50f, by + sz * 0.68f)
+            }
+            btnPath.close()
+            canvas.drawPath(btnPath, btnIcon)
+        }
     }
 
     private fun setBorder(b: BorderSide) {
@@ -768,6 +970,17 @@ class GridView(context: Context) : View(context) {
         val idx = rowIdxAt(worldY / u)
         if (idx < 0) return
         val rn = visRows[idx]
+
+        // başlık hücresinin sağ tarafı (parmak için geniş bölge) filtre menüsünü açar
+        val fi = filterInfo
+        if (fi != null && rn == fi.headerRow && fi.hasButton(col)) {
+            val right = colLeft[col + 1] * u
+            val zone = min(34f * dens, (colLeft[col + 1] - colLeft[col]) * u * 0.6f).coerceAtLeast(22f * dens)
+            if (right - worldX <= zone) {
+                onFilterTap?.invoke(col)
+                return
+            }
+        }
 
         var tr = rn
         var tc = col

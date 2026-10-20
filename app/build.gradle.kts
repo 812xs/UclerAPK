@@ -11,8 +11,8 @@ android {
         applicationId = "com.ortakalan.kopru"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.1"
+        versionCode = 3
+        versionName = "1.2"
     }
 
     buildTypes {
@@ -48,4 +48,6 @@ dependencies {
     implementation("androidx.core:core:1.13.1")
     implementation("eu.agno3.jcifs:jcifs-ng:2.1.10")
     implementation("org.slf4j:slf4j-nop:1.7.36")
+
+    testImplementation("junit:junit:4.13.2")
 }

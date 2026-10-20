@@ -44,6 +44,17 @@ Derleme kırmızı hata verirse: işe tıklayın, hata satırlarını kopyalayı
 - **Aç > Tabletteki dosyalardan aç** ile seçilen dosya yalnızca kaynağı değişikliği bildiriyorsa izlenir;
   izlenemiyorsa uygulama bunu söyler.
 
+## D) Filtreleme (Excel'deki gibi)
+
+- Excel dosyasındaki filtre okları (otomatik filtre ve tablo filtresi) uygulamada da başlık satırında görünür.
+  Dosyada kayıtlı filtre varsa uygulama onu olduğu gibi gösterir.
+- Başlık hücresinin sağ tarafına dokunun: değer listesi açılır. Değerleri onay kutularıyla seçin, **Ara** kutusuyla
+  listeyi daraltın, **(Tümünü Seç)** ile hepsini açıp kapatın, **Tamam**'a basın.
+- **Metin / Sayı filtreleri…** ile Excel'deki gibi koşul verebilirsiniz (içerir, büyüktür, ile başlar, VE / VEYA...).
+- Birden fazla sütunda aynı anda filtre uygulanır. Listeler Excel gibi diğer sütunların filtresine göre daralır.
+- Üstteki **Filtreyi temizle** düğmesi tüm filtreleri kaldırır. Excel dosyası hiçbir zaman değiştirilmez.
+- Dosyada hiç filtre tanımı yoksa üstte **Filtre ekle** düğmesi çıkar; başlık satırını tahmin ederek filtre oklarını ekler.
+
 ## Notlar
 
 - Yalnızca `.xlsx` / `.xlsm` desteklenir. Eski `.xls` ise Excel'de "Farklı Kaydet" ile .xlsx yapın.

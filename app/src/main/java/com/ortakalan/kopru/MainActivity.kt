@@ -54,6 +54,7 @@ class MainActivity : Activity() {
     private lateinit var search: EditText
     private lateinit var banner: LinearLayout
     private lateinit var refreshBtn: TextView
+    private lateinit var filterBtn: TextView
     private val ui = Handler(Looper.getMainLooper())
 
     private var sheets: List<SheetInfo> = emptyList()
@@ -232,6 +233,12 @@ class MainActivity : Activity() {
             lp.leftMargin = dp(8)
             nav.addView(navButton(text, onClick), lp)
         }
+        // Filtre: dosyada filtre yoksa "Filtre ekle", filtre uygulanmışsa "Filtreyi temizle"
+        filterBtn = navButton("Filtre") { onFilterButton() }
+        filterBtn.visibility = View.GONE
+        val flp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        flp.leftMargin = dp(8)
+        nav.addView(filterBtn, flp)
         addNav("Aç") { chooseOpenSource() }
         addNav("Sayfa") { chooseSheet() }
         addNav("Ayarlar") { showSettings() }
@@ -291,6 +298,8 @@ class MainActivity : Activity() {
         grid.onCellSelected = { ref, text ->
             cellInfo.text = if (text.isEmpty()) ref else "$ref:  $text"
         }
+        grid.onFilterTap = { col -> FilterDialog(this, grid, col).show() }
+        grid.onFilterChanged = { refreshFilterUi() }
         grid.onLinkTap = { cell ->
             val target = cell.link
             if (target != null) openLink(cell.text.ifBlank { target }, target)
@@ -687,6 +696,7 @@ class MainActivity : Activity() {
                     grid.setData(sd, samePos)
                     if (!samePos) cellInfo.text = ""
                     applyFilter(samePos)
+                    refreshFilterUi()
                 }
             } catch (e: Throwable) {
                 ui.post {
@@ -713,11 +723,51 @@ class MainActivity : Activity() {
         val q = search.text.toString().trim().lowercase(TextTools.TR)
         val words = q.split(' ').filter { it.isNotEmpty() }
         grid.setFilter(words, !keepScroll)
+        updateStatus()
+    }
 
-        val sd = current
+    /** Alt başlık: sayfa adı, gösterilen / toplam kayıt ve etkin filtre sayısı. */
+    private fun updateStatus() {
+        val sd = current ?: return
         val sheetName = sheets.getOrNull(sheetIndex)?.name ?: ""
-        val total = if (sd == null) 0 else (sd.lastRow - sd.frozenRows)
-        subView.text = "$sheetName  ·  ${grid.shownRowCount()} / $total satır"
+        val fc = grid.filterCounts()
+        val active = grid.activeFilterCount()
+        val counts = if (fc != null) {
+            "${fc[0]} / ${fc[1]} kayıt"
+        } else {
+            "${grid.shownRowCount()} / ${sd.lastRow - sd.frozenRows} satır"
+        }
+        subView.text = "$sheetName  ·  $counts" + if (active > 0) "  ·  $active filtre" else ""
+    }
+
+    // ------------------------------------------------------------------ filtre
+
+    private fun refreshFilterUi() {
+        val active = grid.activeFilterCount()
+        if (current == null) {
+            filterBtn.visibility = View.GONE
+        } else if (active > 0) {
+            filterBtn.text = "Filtreyi temizle"
+            filterBtn.visibility = View.VISIBLE
+        } else if (!grid.hasFilter()) {
+            filterBtn.text = "Filtre ekle"
+            filterBtn.visibility = View.VISIBLE
+        } else {
+            filterBtn.visibility = View.GONE
+        }
+        updateStatus()
+    }
+
+    private fun onFilterButton() {
+        if (grid.activeFilterCount() > 0) {
+            grid.clearAllFilters()
+        } else if (!grid.hasFilter()) {
+            if (grid.enableInferredFilter()) {
+                toastLong("Başlık satırındaki oklara dokunarak filtreleyin")
+            } else {
+                toast("Bu sayfada filtre uygulanacak başlık satırı bulunamadı")
+            }
+        }
     }
 
     // ------------------------------------------------------------------ köprü açma

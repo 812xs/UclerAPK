@@ -8,7 +8,15 @@ object TextTools {
 }
 
 /** kind: 0 = metin, 1 = sayı/tarih, 2 = mantıksal/hata (ortalanır). text zaten Excel biçimiyle biçimlendirilmiştir. */
-class Cell(val col: Int, val text: String, val style: Int, val kind: Int, var link: String?)
+class Cell(
+    val col: Int,
+    val text: String,
+    val style: Int,
+    val kind: Int,
+    var link: String?,
+    /** Sayı/tarih hücresinin ham değeri (filtre ve sıralama için); sayı değilse NaN. */
+    val num: Double = Double.NaN
+)
 
 class RowData(
     val number: Int,
@@ -83,5 +91,7 @@ class SheetData(
     val styles: List<XfStyle>,
     /** Sütun bazlı varsayılan stiller (boş hücrelerin dolgu/kenarlığı için). */
     val colStyles: IntArray,
-    val hasDefaultStyles: Boolean
+    val hasDefaultStyles: Boolean,
+    /** Sayfadaki otomatik filtre/tablo filtresi; yoksa null. */
+    val filter: FilterInfo? = null
 )

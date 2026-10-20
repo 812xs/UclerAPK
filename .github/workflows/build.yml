@@ -21,13 +21,13 @@ jobs:
 
       - name: Derle
         shell: bash
-        run: gradle assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
+        run: gradle testDebugUnitTest assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
 
       - name: Hata ozeti
         if: failure()
         shell: bash
         run: |
-          { grep -E "^e: |error:|What went wrong|Could not|Execution failed|FAILURE|Unresolved|not found|Duplicate class|Caused by|Found in modules" build.log | head -40; echo "----- SON SATIRLAR -----"; tail -25 build.log; } > summary.txt || true
+          { grep -E "^e: |error:|What went wrong|Could not|Execution failed|FAILURE|Unresolved|not found|Duplicate class|Caused by|Found in modules|FAILED|AssertionError|expected" build.log | head -40; echo "----- SON SATIRLAR -----"; tail -25 build.log; } > summary.txt || true
           MSG=$(sed 's/%/%25/g' summary.txt | awk '{printf "%s%%0A", $0}')
           echo "::error title=Gradle hata ozeti::$MSG"
 

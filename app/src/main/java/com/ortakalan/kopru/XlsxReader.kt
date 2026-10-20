@@ -102,6 +102,8 @@ object XlsxReader {
             val colSpecs = ArrayList<FloatArray>()
             val colStyleSpecs = ArrayList<IntArray>() // [min, max, stil]
             val merges = ArrayList<Merge>()
+            val fc = FilterCollector()
+            val tableRids = ArrayList<String>()
             val hyperRefs = ArrayList<Array<String?>>() // [ref, rid, location]
             val formulaLinks = ArrayList<Triple<Int, Int, String>>()
 
@@ -216,6 +218,13 @@ object XlsxReader {
                             "hyperlink" -> hyperRefs.add(
                                 arrayOf(attr(p, "ref"), attrSuffix(p, "id"), attr(p, "location"))
                             )
+                            "autoFilter", "filterColumn", "filters", "filter", "dateGroupItem",
+                            "customFilters", "customFilter", "top10", "dynamicFilter",
+                            "colorFilter", "iconFilter" -> fc.start(p)
+                            "tablePart" -> {
+                                val rid = attrSuffix(p, "id")
+                                if (rid != null) tableRids.add(rid)
+                            }
                         }
                     }
                     XmlPullParser.TEXT -> {
@@ -230,6 +239,7 @@ object XlsxReader {
                             "is" -> inIs = false
                             "t" -> inT = false
                             "rPh" -> inRph = false
+                            "filterColumn", "autoFilter" -> fc.end(p)
                             "c" -> {
                                 val raw = v.toString()
                                 var kind = 0
@@ -269,7 +279,8 @@ object XlsxReader {
                                     // Değeri olmayan ve görünür bir etkisi (dolgu/kenarlık) olmayan hücreler saklanmaz.
                                     val visual = st > 0 && (styles.getOrNull(st)?.let { hasVisual(it) } ?: false)
                                     if (shown.isNotEmpty() || visual) {
-                                        rowCells.add(Cell(curCol, shown, st, kind, null))
+                                        val rawNum = if (kind == 1) (raw.trim().toDoubleOrNull() ?: Double.NaN) else Double.NaN
+                                        rowCells.add(Cell(curCol, shown, st, kind, null, rawNum))
                                     }
                                 }
                             }
@@ -285,11 +296,11 @@ object XlsxReader {
                                         }
                                     }
                                     if (!sorted) rowCells.sortBy { it.col }
-                                    val hgt = if (curHidden) 0f else (curHt ?: (defRowPt * 96f / 72f))
+                                    val hgt = curHt ?: (defRowPt * 96f / 72f)
                                     rowList.add(
                                         RowData(
                                             curRow, hgt, curHidden, rowCells.toTypedArray(),
-                                            curRowStyle, curHt == null && !curHidden
+                                            curRowStyle, curHt == null
                                         )
                                     )
                                 }
@@ -397,6 +408,33 @@ object XlsxReader {
 
             autoFitRows(rowsByNumber, widths, styles, merges, defaultRowPx)
 
+            // --- filtre: önce sayfanın kendi otomatik filtresi, yoksa tablo (xl/tables) filtresi
+            var collector: FilterCollector? = if (fc.ref != null) fc else null
+            if (collector == null) {
+                for (rid in tableRids) {
+                    val target = rels[rid] ?: continue
+                    val tc = readTableFilter(zip, resolvePath(dir, target))
+                    if (tc != null) {
+                        collector = tc
+                        break
+                    }
+                }
+            }
+            var filter: FilterInfo? = null
+            val fref = collector?.ref
+            if (collector != null && fref != null) {
+                val parts = fref.split(":")
+                val a = parseRef(parts[0])
+                val b = if (parts.size > 1) parseRef(parts[1]) else a
+                if (a.first >= 1 && b.first >= a.first && b.second >= a.second && a.second >= 0) {
+                    val abs = HashMap<Int, ColCriteria>()
+                    for ((rel, cr) in collector.criteria) abs[a.second + rel] = cr
+                    val nb = HashSet<Int>()
+                    for (rel in collector.noButton) nb.add(a.second + rel)
+                    filter = FilterInfo(a.first, a.second, b.second, minOf(b.first, lastRow), abs, nb, false)
+                }
+            }
+
             SheetData(
                 rowsByNumber,
                 lastRow,
@@ -408,9 +446,39 @@ object XlsxReader {
                 showGrid,
                 styles,
                 colStyles,
-                hasDefault
+                hasDefault,
+                filter
             )
         }
+    }
+
+    /** Tablo XML'indeki filtre tanımı; tabloda filtre düğmesi yoksa null. */
+    private fun readTableFilter(zip: ZipFile, path: String): FilterCollector? {
+        val p = open(zip, path) ?: return null
+        val c = FilterCollector()
+        var ev = p.eventType
+        while (ev != XmlPullParser.END_DOCUMENT) {
+            if (ev == XmlPullParser.START_TAG) c.start(p)
+            else if (ev == XmlPullParser.END_TAG) c.end(p)
+            ev = p.next()
+        }
+        return if (c.ref != null) c else null
+    }
+
+    /** Bağıl bir hedefi ("../tables/table1.xml") paket içi tam yola çevirir ("xl/tables/table1.xml"). */
+    private fun resolvePath(dir: String, target: String): String {
+        if (target.startsWith("/")) return target.substring(1)
+        val parts = ArrayList<String>()
+        for (seg in dir.split('/')) if (seg.isNotEmpty()) parts.add(seg)
+        for (seg in target.split('/')) {
+            if (seg.isEmpty() || seg == ".") continue
+            if (seg == "..") {
+                if (parts.isNotEmpty()) parts.removeAt(parts.size - 1)
+            } else {
+                parts.add(seg)
+            }
+        }
+        return parts.joinToString("/")
     }
 
     /**
@@ -431,7 +499,7 @@ object XlsxReader {
         val maxPx = 409f * 96f / 72f // Excel'in en büyük satır yüksekliği
 
         for (rd in rows) {
-            if (rd == null || !rd.autoHeight || rd.hidden) continue
+            if (rd == null || !rd.autoHeight) continue
             var need = defaultRowPx
             for (cell in rd.cells) {
                 if (cell.text.isEmpty()) continue
