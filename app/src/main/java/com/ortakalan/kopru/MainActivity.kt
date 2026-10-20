@@ -25,6 +25,7 @@ import android.view.inputmethod.EditorInfo
 import android.webkit.MimeTypeMap
 import android.widget.ArrayAdapter
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.ScrollView
@@ -84,7 +85,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         prefs = getSharedPreferences("kopru", Context.MODE_PRIVATE)
-        buildUi()
+        buildUi(savedInstanceState == null)
         loadSourceState()
 
         if (!handleIntent(intent)) {
@@ -176,7 +177,7 @@ class MainActivity : Activity() {
         return b
     }
 
-    private fun buildUi() {
+    private fun buildUi(withSplash: Boolean) {
         val root = LinearLayout(this)
         root.orientation = LinearLayout.VERTICAL
         root.setBackgroundColor(Color.WHITE)
@@ -296,7 +297,14 @@ class MainActivity : Activity() {
         }
         root.addView(grid, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
-        setContentView(root)
+        // Açılış animasyonu uygulamanın üstünde oynar; altta Excel zaten yüklenmeye başlar
+        val frame = FrameLayout(this)
+        frame.addView(root, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        if (withSplash) {
+            val splash = SplashView(this) { v -> frame.removeView(v) }
+            frame.addView(splash, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        }
+        setContentView(frame)
     }
 
     // ------------------------------------------------------------------ Excel açma
@@ -831,6 +839,20 @@ class MainActivity : Activity() {
                 toast("Kaydedildi")
             }
             .setNegativeButton("Vazgeç", null)
+            .setNeutralButton("Hakkında") { _, _ -> showAbout() }
+            .show()
+    }
+
+    private fun showAbout() {
+        val ver = try {
+            packageManager.getPackageInfo(packageName, 0).versionName ?: ""
+        } catch (e: Throwable) {
+            ""
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Köprü Açıcı $ver")
+            .setMessage("Üçler Makina\n\nYayıncı · Yapımcı · Geliştirici\nVietra Teknoloji")
+            .setPositiveButton("Tamam", null)
             .show()
     }
 
