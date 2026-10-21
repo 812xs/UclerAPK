@@ -20,68 +20,100 @@ object LinkTools {
         t.startsWith("http://", true) || t.startsWith("https://", true)
 
     /**
+     * Yoldaki non-ASCII ve özel karakterleri SMB URL için encode eder.
+     * Slash ve zaten-encoded karakterlere dokunmaz.
+     */
+    private fun encodePath(path: String): String {
+        // Her segment'i ayrı ayrı encode et, '/' korunur
+        return path.split('/').joinToString("/") { seg ->
+            java.net.URLEncoder.encode(seg, "UTF-8").replace("+", "%20")
+        }
+    }
+
+    /**
      * Excel'deki köprü adresini SMB adresine çevirir. Excel dosyasındaki yazı değişmez,
      * sadece uygulama açarken dönüştürür.
      *
      *   \\192.168.1.3\OrtakAlan\2024\a.pdf   ->  smb://192.168.1.3/OrtakAlan/2024/a.pdf
      *   file:///\\192.168.1.3\OrtakAlan\a.pdf ->  smb://192.168.1.3/OrtakAlan/a.pdf
      *   smb://192.168.1.3/OrtakAlan/a.pdf    ->  aynen
+     *
+     * @param encode true ise yoldaki Türkçe/özel karakterleri URL-encode eder
      */
-    fun toSmbUrl(target: String, hostOverride: String?): String? {
-        var t = Uri.decode(target.trim())
+    fun toSmbUrl(target: String, hostOverride: String?, encode: Boolean = false): String? {
+        var t = try { Uri.decode(target.trim()) } catch (e: Throwable) { target.trim() }
         if (t.startsWith("file:", true)) t = t.substring(5)
         else if (t.startsWith("smb:", true)) t = t.substring(4)
         t = t.replace('\\', '/').trimStart('/')
 
         val parts = t.split('/').filter { it.isNotEmpty() }.dropWhile { it == ".." || it == "." }
-        if (parts.size < 3) return null // sunucu / paylaşım / dosya en az 3 parça olmalı
+        if (parts.size < 2) return null
         if (parts[0].length == 2 && parts[0][1] == ':') return null // C:\... gibi yerel yol
 
         val host = if (!hostOverride.isNullOrBlank()) hostOverride.trim() else parts[0]
-        val rest = parts.drop(1).joinToString("/").replace("#", "%23")
+        val restParts = if (!hostOverride.isNullOrBlank()) parts else parts.drop(1)
+        val rest = if (encode) {
+            restParts.joinToString("/") { java.net.URLEncoder.encode(it, "UTF-8").replace("+", "%20") }
+        } else {
+            restParts.joinToString("/").replace("#", "%23")
+        }
         return "smb://$host/$rest"
     }
 
     /**
-     * Köprü yolu eksik veya kırık olduğunda deneyeceğimiz URL listesini üretir.
-     * Önce orijinal yol, sonra sunucu kökünden bilinen önek kombinasyonları.
-     *
-     * Örnek: target = "\dosyalar\2024\a.pdf", host = "192.168.1.3"
-     *   1. smb://192.168.1.3/dosyalar/2024/a.pdf  (asıl)
-     *   2. smb://192.168.1.3/OrtakAlan/ÜPK/dosyalar/2024/a.pdf
-     *   3. smb://192.168.1.3/OrtakAlan/dosyalar/2024/a.pdf
-     *   4. smb://192.168.1.3/dosyalar/2024/a.pdf  (zaten 1. ile aynı; tekrar denemez)
+     * Köprü için denenecek tüm URL adaylarını üretir (encode edilmiş/edilmemiş varyantlar dahil).
+     * Sıra: tam yol ham → tam yol encoded → göreli yolla önek kombinasyonları (ham + encoded)
      */
-    fun candidateUrls(target: String, host: String, user: String, pass: String, domain: String): List<String> {
-        val base = toSmbUrl(target, host) ?: return emptyList()
-        val result = mutableListOf(base)
+    fun candidateUrls(target: String, host: String): List<String> {
+        val result = LinkedHashSet<String>()
 
-        // Köprüde sunucu adı yoksa (sadece göreli yol) önek denemeleri ekle
-        var t = Uri.decode(target.trim())
+        // 1. Tam yol, ham (orijinal)
+        toSmbUrl(target, host, encode = false)?.let { result.add(it) }
+        // 2. Tam yol, URL-encoded (Türkçe karakter sorunu için)
+        toSmbUrl(target, host, encode = true)?.let { result.add(it) }
+
+        // Göreli yol kısmını çıkar (host'u soy)
+        var t = try { Uri.decode(target.trim()) } catch (e: Throwable) { target.trim() }
         if (t.startsWith("file:", true)) t = t.substring(5)
         t = t.replace('\\', '/').trimStart('/')
         val parts = t.split('/').filter { it.isNotEmpty() }
-
-        // İlk parça IP/hostname değilse göreli yol demek; önek kombinasyonları dene
         val firstIsHost = parts.isNotEmpty() &&
-            (parts[0].contains('.') || parts[0].equals(host, ignoreCase = true))
+            (parts[0].contains('.') || parts[0].equals(host, ignoreCase = true) ||
+             parts[0].all { c -> c.isDigit() || c == '.' })
 
-        val relativePath = if (firstIsHost) parts.drop(1).joinToString("/") else parts.joinToString("/")
-        val safeRel = relativePath.replace("#", "%23")
+        // Göreli kısım: host'tan sonraki parçalar
+        val relParts = if (firstIsHost) parts.drop(1) else parts
 
-        if (safeRel.isNotEmpty()) {
-            val prefixes = listOf(
-                "OrtakAlan/%C3%9CPK",   // ÜPK URL-encoded
-                "OrtakAlan/ÜPK",
-                "OrtakAlan"
-            )
-            for (pfx in prefixes) {
-                val candidate = "smb://$host/$pfx/$safeRel"
-                if (candidate !in result) result.add(candidate)
+        // Tam yol zaten OrtakAlan/ÜPK ile başlıyorsa önek ekleme
+        val alreadyHasPrefix = relParts.size >= 2 &&
+            relParts[0].equals("OrtakAlan", ignoreCase = true) &&
+            relParts[1].equals("ÜPK", ignoreCase = true)
+
+        if (!alreadyHasPrefix && relParts.isNotEmpty()) {
+            // 3-6: OrtakAlan/ÜPK öneği + göreli yol (ham ve encoded)
+            val relRaw = relParts.joinToString("/").replace("#", "%23")
+            val relEnc = relParts.joinToString("/") {
+                java.net.URLEncoder.encode(it, "UTF-8").replace("+", "%20")
+            }
+            val upkRaw  = "ÜPK"
+            val upkEnc  = "%C3%9CPK"
+            for (upk in listOf(upkRaw, upkEnc)) {
+                for (rel in listOf(relRaw, relEnc)) {
+                    result.add("smb://$host/OrtakAlan/$upk/$rel")
+                }
+            }
+            // 7-8: Sadece OrtakAlan öneği
+            for (rel in listOf(relRaw, relEnc)) {
+                result.add("smb://$host/OrtakAlan/$rel")
             }
         }
-        return result
+
+        return result.toList()
     }
+
+    /** Hata ayıklama için URL listesini okunabilir biçimde döndürür. */
+    fun candidatesSummary(urls: List<String>): String =
+        urls.mapIndexed { i, u -> "${i + 1}. ${u.removePrefix("smb://")}" }.joinToString("\n")
 }
 
 object SmbTools {

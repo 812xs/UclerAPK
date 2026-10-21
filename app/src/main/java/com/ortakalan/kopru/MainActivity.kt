@@ -793,7 +793,7 @@ class MainActivity : Activity() {
             return
         }
 
-        val candidates = LinkTools.candidateUrls(target, host, user, pass, domain)
+        val candidates = LinkTools.candidateUrls(target, host)
         if (candidates.isEmpty()) {
             showError("Bu bağlantı anlaşılamadı:\n\n$target")
             return
@@ -811,7 +811,8 @@ class MainActivity : Activity() {
         Thread {
             smbCache.mkdirs()
             SmbTools.cleanOld(smbCache)
-            var lastErr: Throwable? = null
+            // Her URL adayı ve hatası: hata ayıklama için sakla
+            val errors = mutableListOf<Pair<String, String>>()
             for (url in candidates) {
                 if (cancel.get()) { ui.post { dlg.dismiss() }; return@Thread }
                 try {
@@ -822,15 +823,24 @@ class MainActivity : Activity() {
                     ui.post { dlg.dismiss() }
                     return@Thread
                 } catch (e: Throwable) {
-                    lastErr = e
-                    // Sonraki adayı dene; erişim reddi veya dosya bulunamadı hataları beklenen
+                    // Ham teknik hata mesajını sakla (Türkçe'ye çevirmeden)
+                    val raw = buildString {
+                        var t: Throwable? = e
+                        var d = 0
+                        while (t != null && d < 4) {
+                            append(t.javaClass.simpleName)
+                            if (!t.message.isNullOrBlank()) append(": ").append(t.message)
+                            t = t.cause; d++
+                            if (t != null) append(" → ")
+                        }
+                    }.take(200)
+                    errors.add(url.removePrefix("smb://") to raw)
                 }
             }
-            val err = lastErr
             ui.post {
                 dlg.dismiss()
-                val tried = candidates.joinToString("\n") { "• ${it.removePrefix("smb://")}" }
-                showError("Dosya hiçbir yolda açılamadı.\n\nDenenen yollar:\n$tried\n\nSon hata: ${if (err != null) SmbTools.explain(err) else "?"}")
+                val detail = errors.joinToString("\n\n") { (u, e) -> "• $u\n  $e" }
+                showError("Dosya hiçbir yolda açılamadı.\n\n$detail")
             }
         }.start()
     }
