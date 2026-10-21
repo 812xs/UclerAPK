@@ -793,8 +793,8 @@ class MainActivity : Activity() {
             return
         }
 
-        val url = LinkTools.toSmbUrl(target, host)
-        if (url == null) {
+        val candidates = LinkTools.candidateUrls(target, host, user, pass, domain)
+        if (candidates.isEmpty()) {
             showError("Bu bağlantı anlaşılamadı:\n\n$target")
             return
         }
@@ -809,21 +809,28 @@ class MainActivity : Activity() {
         dlg.show()
 
         Thread {
-            try {
-                smbCache.mkdirs()
-                SmbTools.cleanOld(smbCache)
-                val f = SmbTools.download(url, user, pass, domain, smbCache, cancel)
-                ui.post {
-                    dlg.dismiss()
-                    viewFile(f)
+            smbCache.mkdirs()
+            SmbTools.cleanOld(smbCache)
+            var lastErr: Throwable? = null
+            for (url in candidates) {
+                if (cancel.get()) { ui.post { dlg.dismiss() }; return@Thread }
+                try {
+                    val f = SmbTools.download(url, user, pass, domain, smbCache, cancel)
+                    ui.post { dlg.dismiss(); viewFile(f) }
+                    return@Thread
+                } catch (c: SmbTools.Cancelled) {
+                    ui.post { dlg.dismiss() }
+                    return@Thread
+                } catch (e: Throwable) {
+                    lastErr = e
+                    // Sonraki adayı dene; erişim reddi veya dosya bulunamadı hataları beklenen
                 }
-            } catch (c: SmbTools.Cancelled) {
-                ui.post { dlg.dismiss() }
-            } catch (e: Throwable) {
-                ui.post {
-                    dlg.dismiss()
-                    showError(SmbTools.explain(e))
-                }
+            }
+            val err = lastErr
+            ui.post {
+                dlg.dismiss()
+                val tried = candidates.joinToString("\n") { "• ${it.removePrefix("smb://")}" }
+                showError("Dosya hiçbir yolda açılamadı.\n\nDenenen yollar:\n$tried\n\nSon hata: ${if (err != null) SmbTools.explain(err) else "?"}")
             }
         }.start()
     }

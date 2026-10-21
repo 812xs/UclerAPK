@@ -41,6 +41,47 @@ object LinkTools {
         val rest = parts.drop(1).joinToString("/").replace("#", "%23")
         return "smb://$host/$rest"
     }
+
+    /**
+     * Köprü yolu eksik veya kırık olduğunda deneyeceğimiz URL listesini üretir.
+     * Önce orijinal yol, sonra sunucu kökünden bilinen önek kombinasyonları.
+     *
+     * Örnek: target = "\dosyalar\2024\a.pdf", host = "192.168.1.3"
+     *   1. smb://192.168.1.3/dosyalar/2024/a.pdf  (asıl)
+     *   2. smb://192.168.1.3/OrtakAlan/ÜPK/dosyalar/2024/a.pdf
+     *   3. smb://192.168.1.3/OrtakAlan/dosyalar/2024/a.pdf
+     *   4. smb://192.168.1.3/dosyalar/2024/a.pdf  (zaten 1. ile aynı; tekrar denemez)
+     */
+    fun candidateUrls(target: String, host: String, user: String, pass: String, domain: String): List<String> {
+        val base = toSmbUrl(target, host) ?: return emptyList()
+        val result = mutableListOf(base)
+
+        // Köprüde sunucu adı yoksa (sadece göreli yol) önek denemeleri ekle
+        var t = Uri.decode(target.trim())
+        if (t.startsWith("file:", true)) t = t.substring(5)
+        t = t.replace('\\', '/').trimStart('/')
+        val parts = t.split('/').filter { it.isNotEmpty() }
+
+        // İlk parça IP/hostname değilse göreli yol demek; önek kombinasyonları dene
+        val firstIsHost = parts.isNotEmpty() &&
+            (parts[0].contains('.') || parts[0].equals(host, ignoreCase = true))
+
+        val relativePath = if (firstIsHost) parts.drop(1).joinToString("/") else parts.joinToString("/")
+        val safeRel = relativePath.replace("#", "%23")
+
+        if (safeRel.isNotEmpty()) {
+            val prefixes = listOf(
+                "OrtakAlan/%C3%9CPK",   // ÜPK URL-encoded
+                "OrtakAlan/ÜPK",
+                "OrtakAlan"
+            )
+            for (pfx in prefixes) {
+                val candidate = "smb://$host/$pfx/$safeRel"
+                if (candidate !in result) result.add(candidate)
+            }
+        }
+        return result
+    }
 }
 
 object SmbTools {
