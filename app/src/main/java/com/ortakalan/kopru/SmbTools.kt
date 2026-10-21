@@ -77,9 +77,15 @@ object LinkTools {
         if (t.startsWith("file:", true)) t = t.substring(5)
         t = t.replace('\\', '/').trimStart('/')
         val parts = t.split('/').filter { it.isNotEmpty() }
-        val firstIsHost = parts.isNotEmpty() &&
-            (parts[0].contains('.') || parts[0].equals(host, ignoreCase = true) ||
-             parts[0].all { c -> c.isDigit() || c == '.' })
+        // İlk parça: IP/hostname ise host say, at. Sadece harf/rakam/tire/nokta olan
+        // ve rakam veya nokta içeren (IP benzeri) ya da ayarlardaki host ile eşleşen her şey host.
+        // MAILLEFER gibi NetBIOS adları da host olabilir — bunları da at.
+        val firstIsHost = parts.isNotEmpty() && run {
+            val p0 = parts[0]
+            p0.equals(host, ignoreCase = true) ||          // ayarlardaki host
+            p0.contains('.') ||                             // IP veya FQDN
+            p0.all { c -> c.isLetterOrDigit() || c == '-' } // NetBIOS adı (MAILLEFER gibi)
+        }
 
         // Göreli kısım: host'tan sonraki parçalar
         val relParts = if (firstIsHost) parts.drop(1) else parts
@@ -178,8 +184,11 @@ object SmbTools {
     }
 
     private fun fetch(u: String, ctx: CIFSContext, outDir: File, cancel: AtomicBoolean): File {
-        val f = SmbFile(u, ctx)
-        if (f.isDirectory) throw IllegalArgumentException("Bu bağlantı bir klasör, dosya değil.")
+        // URL'nin sonundaki slash'ı kaldır — jcifs-ng slash olan adresi klasör sayar
+        val cleanUrl = u.trimEnd('/')
+        val f = SmbFile(cleanUrl, ctx)
+        // isDirectory kontrolü yapmıyoruz: bazı sunucular nokta içeren klasör adlarında
+        // (ör. SR308743.5) yanlış true döndürüyor. getInputStream() zaten hata verir.
 
         val rawName = f.getName().trimEnd('/')
         val name = rawName.replace(Regex("[\\\\/:*?\"<>|]"), "_").ifBlank { "dosya" }
