@@ -8,7 +8,7 @@
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:largeHeap="true"
-        android:label="Köprü Açıcı"
+        android:label="Açık Siparişler"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
 
         <activity
