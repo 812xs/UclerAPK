@@ -947,6 +947,22 @@ class GridView(context: Context) : View(context) {
         return true
     }
 
+    /** Fare tekerleği / dokunmatik yüzey kaydırma (PC-mod tabletler). */
+    override fun onGenericMotionEvent(e: MotionEvent): Boolean {
+        if (e.source and android.view.InputDevice.SOURCE_CLASS_POINTER == 0) return super.onGenericMotionEvent(e)
+        if (e.action == MotionEvent.ACTION_SCROLL) {
+            val vScroll = e.getAxisValue(MotionEvent.AXIS_VSCROLL)
+            val hScroll = e.getAxisValue(MotionEvent.AXIS_HSCROLL)
+            // Tekerlek başına kaç piksel kaydırılacak: 3 satır yüksekliği kadar hızlı
+            val lineH = (20f * dens * zoom).coerceAtLeast(24f)
+            panY = (panY - vScroll * lineH * 3f).coerceIn(0f, maxPanY())
+            panX = (panX - hScroll * lineH * 3f).coerceIn(0f, maxPanX())
+            invalidate()
+            return true
+        }
+        return super.onGenericMotionEvent(e)
+    }
+
     override fun computeScroll() {
         if (scroller.computeScrollOffset()) {
             panX = scroller.currX.toFloat()
