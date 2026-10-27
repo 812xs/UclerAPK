@@ -33,6 +33,13 @@ class GridView(context: Context) : View(context) {
     /** Filtre ölçütleri değişti (ölçüt eklendi/kaldırıldı/temizlendi). */
     var onFilterChanged: (() -> Unit)? = null
 
+    /** Çift dokunuşla hücre düzenleme: (satır1tabanlı, sütun0tabanlı, mevcutMetin, cell?) */
+    var onCellDoubleTap: ((row1: Int, col0: Int, currentText: String, cell: Cell?) -> Unit)? = null
+
+    /** Düzenleme modu açık mı? Açıkken tek dokunuş köprü açmaz, hücreyi seçer. */
+    var editMode = false
+        set(v) { field = v; invalidate() }
+
     private var data: SheetData? = null
     private val dens = resources.displayMetrics.density
     private var zoom = 1f
@@ -923,6 +930,11 @@ class GridView(context: Context) : View(context) {
             handleTap(e.x, e.y)
             return true
         }
+
+        override fun onDoubleTap(e: MotionEvent): Boolean {
+            handleDoubleTap(e.x, e.y)
+            return true
+        }
     })
 
     private val sgd = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
@@ -1013,6 +1025,54 @@ class GridView(context: Context) : View(context) {
 
         val cell = d.rowsByNumber.getOrNull(tr)?.cellAt(tc)
         onCellSelected?.invoke(colName(tc) + tr, cell?.text ?: "")
-        if (cell != null && cell.link != null) onLinkTap?.invoke(cell)
+        if (!editMode && cell != null && cell.link != null) onLinkTap?.invoke(cell)
+    }
+
+    private fun handleDoubleTap(x: Float, y: Float) {
+        val d = data ?: return
+        if (colCount == 0 || visRows.isEmpty()) return
+        if (x < gutterW || y < headerH) return
+        val u = dens * zoom
+        val fx = colLeft[frozenCols] * u
+        val fy = rowTop[frozenRowCount] * u
+        val worldX = if (x < gutterW + fx) x - gutterW else x - gutterW + panX
+        val worldY = if (y < headerH + fy) y - headerH else y - headerH + panY
+        val col = colAt(worldX / u)
+        val idx = rowIdxAt(worldY / u)
+        if (idx < 0) return
+        val rn = visRows[idx]
+
+        var tr = rn; var tc = col
+        for (m in d.merges) {
+            if (rn in m.r1..m.r2 && col in m.c1..m.c2) { tr = m.r1; tc = m.c1; break }
+        }
+        selRow = tr; selCol = tc; invalidate()
+        val cell = d.rowsByNumber.getOrNull(tr)?.cellAt(tc)
+        onCellDoubleTap?.invoke(tr, tc, cell?.text ?: "", cell)
+    }
+
+    /** Düzenleme sonrası veriyi güncelle (tek hücre) */
+    fun updateCell(row1: Int, col0: Int, newText: String, bgColor: Int?, fontColor: Int?) {
+        val d = data ?: return
+        val rd = d.rowsByNumber.getOrNull(row1) ?: return
+        val oldCell = rd.cellAt(col0)
+        val newStyle = oldCell?.style ?: 0
+        val newCell = Cell(
+            col = col0,
+            text = newText,
+            style = newStyle,
+            kind = if (newText.toDoubleOrNull() != null) 1 else 0,
+            link = oldCell?.link,
+            num = newText.toDoubleOrNull() ?: Double.NaN
+        )
+        // Mevcut hücreyi güncelle ya da ekle
+        val cells = rd.cells.toMutableList()
+        val existIdx = cells.indexOfFirst { it.col == col0 }
+        if (existIdx >= 0) cells[existIdx] = newCell else {
+            cells.add(newCell)
+            cells.sortBy { it.col }
+        }
+        rd.cells = cells.toTypedArray()
+        invalidate()
     }
 }

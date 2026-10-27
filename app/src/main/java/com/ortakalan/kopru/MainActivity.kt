@@ -32,6 +32,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.content.FileProvider
+import jcifs.smb.SmbFile
 import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.Executors
@@ -55,6 +56,7 @@ class MainActivity : Activity() {
     private lateinit var banner: LinearLayout
     private lateinit var refreshBtn: TextView
     private lateinit var filterBtn: TextView
+    private lateinit var editModeBtn: TextView
     private val ui = Handler(Looper.getMainLooper())
 
     private var sheets: List<SheetInfo> = emptyList()
@@ -65,6 +67,10 @@ class MainActivity : Activity() {
     private var srcKind = "" // "smb" | "uri" | ""
     private var srcSmb = ""
     private var srcUri = ""
+
+    // ---- bekleyen xlsx düzenlemeleri (SMB'ye kaydedilmedi)
+    private val pendingEdits = LinkedHashMap<XlsxWriter.CellAddr, XlsxWriter.CellEdit>()
+    private var unsaved = false
 
     @Volatile
     private var baseM = 0L // yüklendiği andaki son değişiklik zamanı
@@ -239,6 +245,13 @@ class MainActivity : Activity() {
         val flp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         flp.leftMargin = dp(8)
         nav.addView(filterBtn, flp)
+
+        editModeBtn = navButton("✏ Düzenle") { toggleEditMode() }
+        editModeBtn.visibility = View.GONE
+        val elp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        elp.leftMargin = dp(8)
+        nav.addView(editModeBtn, elp)
+
         addNav("Aç") { chooseOpenSource() }
         addNav("Sayfa") { chooseSheet() }
         addNav("Ayarlar") { showSettings() }
@@ -303,6 +316,9 @@ class MainActivity : Activity() {
         grid.onLinkTap = { cell ->
             val target = cell.link
             if (target != null) openLink(cell.text.ifBlank { target }, target)
+        }
+        grid.onCellDoubleTap = { row1, col0, currentText, cell ->
+            showCellEditDialog(row1, col0, currentText, cell)
         }
         root.addView(grid, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
@@ -746,14 +762,21 @@ class MainActivity : Activity() {
         val active = grid.activeFilterCount()
         if (current == null) {
             filterBtn.visibility = View.GONE
-        } else if (active > 0) {
-            filterBtn.text = "Filtreyi temizle"
-            filterBtn.visibility = View.VISIBLE
-        } else if (!grid.hasFilter()) {
-            filterBtn.text = "Filtre ekle"
-            filterBtn.visibility = View.VISIBLE
+            editModeBtn.visibility = View.GONE
         } else {
-            filterBtn.visibility = View.GONE
+            if (active > 0) {
+                filterBtn.text = "Filtreyi temizle"
+                filterBtn.visibility = View.VISIBLE
+            } else if (!grid.hasFilter()) {
+                filterBtn.text = "Filtre ekle"
+                filterBtn.visibility = View.VISIBLE
+            } else {
+                filterBtn.visibility = View.GONE
+            }
+            editModeBtn.visibility = View.VISIBLE
+            editModeBtn.text = if (grid.editMode) "✏ Düzenleniyor" else "✏ Düzenle"
+            editModeBtn.setTextColor(if (grid.editMode) 0xFFFFFFFF.toInt() else 0xFF1A73E8.toInt())
+            editModeBtn.setBackgroundColor(if (grid.editMode) 0xFF1A73E8.toInt() else android.graphics.Color.TRANSPARENT)
         }
         updateStatus()
     }
@@ -921,6 +944,210 @@ class MainActivity : Activity() {
             .setMessage("Üçler Makina\n\nYayıncı · Yapımcı · Geliştirici\nVietra Teknoloji")
             .setPositiveButton("Tamam", null)
             .show()
+    }
+
+    // ------------------------------------------------------------------ xlsx düzenleme
+
+    private fun toggleEditMode() {
+        if (current == null) return
+        grid.editMode = !grid.editMode
+        if (!grid.editMode && unsaved) {
+            // Düzenleme modundan çıkarken kaydedilmemiş değişiklik varsa kaydet
+            saveEditsToSmb()
+        }
+        refreshFilterUi()
+        if (grid.editMode) {
+            toastLong("Hücreye çift dokunun: metin girin veya renk seçin")
+        }
+    }
+
+    private fun showCellEditDialog(row1: Int, col0: Int, currentText: String, cell: Cell?) {
+        if (current == null) return
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        col.setPadding(dp(20), dp(14), dp(20), dp(4))
+
+        // Metin giriş alanı
+        val etLabel = TextView(this)
+        etLabel.text = "Hücre metni"
+        etLabel.setTextColor(Color.BLACK)
+        etLabel.textSize = 13f
+        col.addView(etLabel)
+
+        val et = EditText(this)
+        et.setText(currentText)
+        et.setSingleLine(false)
+        et.minLines = 2
+        et.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+        col.addView(et, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+
+        // Arka plan rengi seçici
+        val bgLabel = TextView(this)
+        bgLabel.text = "Arka plan rengi"
+        bgLabel.setTextColor(Color.BLACK)
+        bgLabel.textSize = 13f
+        val lpBg = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        lpBg.topMargin = dp(12)
+        col.addView(bgLabel, lpBg)
+
+        val bgRow = LinearLayout(this)
+        bgRow.orientation = LinearLayout.HORIZONTAL
+        val bgColors = listOf(
+            null to "Yok",
+            0xFFFFFF00.toInt() to "Sarı",
+            0xFF90EE90.toInt() to "Yeşil",
+            0xFFADD8E6.toInt() to "Mavi",
+            0xFFFFB6C1.toInt() to "Pembe",
+            0xFFFFD700.toInt() to "Altın",
+            0xFFFF6347.toInt() to "Kırmızı",
+            0xFFD3D3D3.toInt() to "Gri"
+        )
+        var selectedBgColor: Int? = null
+        val bgBtns = mutableListOf<TextView>()
+        for ((color, name) in bgColors) {
+            val btn = TextView(this)
+            btn.text = if (color == null) "✕" else "  "
+            btn.textSize = 13f
+            btn.gravity = Gravity.CENTER
+            val size = dp(34)
+            val lp = LinearLayout.LayoutParams(size, size)
+            lp.rightMargin = dp(6)
+            btn.background = rounded(color ?: 0xFFEEEEEE.toInt(), 6)
+            if (color == null) btn.setTextColor(Color.BLACK)
+            val c = color
+            btn.setOnClickListener {
+                selectedBgColor = c
+                bgBtns.forEach { b -> b.alpha = 0.55f }
+                btn.alpha = 1f
+            }
+            btn.alpha = if (color == selectedBgColor) 1f else 0.55f
+            bgBtns.add(btn)
+            bgRow.addView(btn, lp)
+        }
+        col.addView(bgRow)
+
+        // Yazı rengi seçici
+        val fontLabel = TextView(this)
+        fontLabel.text = "Yazı rengi"
+        fontLabel.setTextColor(Color.BLACK)
+        fontLabel.textSize = 13f
+        val lpFont = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        lpFont.topMargin = dp(12)
+        col.addView(fontLabel, lpFont)
+
+        val fontRow = LinearLayout(this)
+        fontRow.orientation = LinearLayout.HORIZONTAL
+        val fontColors = listOf(
+            null to "Yok",
+            0xFF000000.toInt() to "Siyah",
+            0xFFFFFFFF.toInt() to "Beyaz",
+            0xFFFF0000.toInt() to "Kırmızı",
+            0xFF0000FF.toInt() to "Mavi",
+            0xFF008000.toInt() to "Yeşil",
+            0xFFFFA500.toInt() to "Turuncu",
+            0xFF800080.toInt() to "Mor"
+        )
+        var selectedFontColor: Int? = null
+        val fontBtns = mutableListOf<TextView>()
+        for ((color, name) in fontColors) {
+            val btn = TextView(this)
+            btn.text = if (color == null) "✕" else "A"
+            btn.textSize = 13f
+            btn.gravity = Gravity.CENTER
+            val size = dp(34)
+            val lp = LinearLayout.LayoutParams(size, size)
+            lp.rightMargin = dp(6)
+            val bgC = when {
+                color == null -> 0xFFEEEEEE.toInt()
+                color == 0xFFFFFFFF.toInt() -> 0xFF888888.toInt()
+                else -> color
+            }
+            btn.background = rounded(bgC, 6)
+            btn.setTextColor(if (color == 0xFF000000.toInt() || color == null) Color.BLACK else Color.WHITE)
+            val c = color
+            btn.setOnClickListener {
+                selectedFontColor = c
+                fontBtns.forEach { b -> b.alpha = 0.55f }
+                btn.alpha = 1f
+            }
+            btn.alpha = if (color == selectedFontColor) 1f else 0.55f
+            fontBtns.add(btn)
+            fontRow.addView(btn, lp)
+        }
+        col.addView(fontRow)
+
+        val sv = ScrollView(this)
+        sv.addView(col)
+
+        AlertDialog.Builder(this)
+            .setTitle("Hücreyi düzenle")
+            .setView(sv)
+            .setPositiveButton("Kaydet") { _, _ ->
+                val newText = et.text.toString()
+                val edit = XlsxWriter.CellEdit(
+                    text = newText,
+                    bgColor = selectedBgColor,
+                    fontColor = selectedFontColor
+                )
+                val addr = XlsxWriter.CellAddr(row1 - 1, col0) // XlsxWriter 0-based row
+                pendingEdits[addr] = edit
+                unsaved = true
+                grid.updateCell(row1, col0, newText, selectedBgColor, selectedFontColor)
+                toast("Değişiklik kaydedildi")
+                // Otomatik SMB'ye kaydet
+                saveEditsToSmb()
+            }
+            .setNegativeButton("Vazgeç", null)
+            .show()
+    }
+
+    private fun saveEditsToSmb() {
+        if (pendingEdits.isEmpty()) return
+        if (srcKind != "smb") {
+            // SMB değilse sadece yerel olarak sakla (kullanıcıya bildir)
+            toastLong("Yerel dosya düzenlendi. SMB kaynağından açılmadığı için sunucuya kaydedilemez.")
+            return
+        }
+        val url = srcSmb
+        if (url.isBlank()) return
+
+        val editsCopy = LinkedHashMap(pendingEdits)
+        val c = creds()
+
+        Thread {
+            try {
+                val tmp = File(filesDir, "edit_tmp.xlsx")
+                XlsxWriter.apply(savedXlsx, tmp, sheetIndex, editsCopy)
+
+                // SMB'ye yükle
+                val ctx = SmbTools.openContext(c[0], c[1], c[2])
+                try {
+                    val smbFile = jcifs.smb.SmbFile(url, ctx)
+                    smbFile.getOutputStream().use { os ->
+                        tmp.inputStream().use { ins -> ins.copyTo(os) }
+                    }
+                    // Başarıyla kaydedildi: savedXlsx'i güncelle
+                    savedXlsx.delete()
+                    tmp.renameTo(savedXlsx)
+                    // Stat güncelle (dosya değişti)
+                    val st = SmbTools.stat(url, ctx)
+                    prefs.edit().putLong("src_m", st[0]).putLong("src_s", st[1]).apply()
+                    baseM = st[0]; baseS = st[1]
+                    ui.post {
+                        pendingEdits.clear()
+                        unsaved = false
+                        hideBanner()
+                        toast("Sunucuya kaydedildi ✓")
+                    }
+                } finally {
+                    try { ctx.close() } catch (e: Throwable) {}
+                }
+            } catch (e: Throwable) {
+                ui.post {
+                    showError("Sunucuya kaydedilemedi:\n${SmbTools.explain(e)}")
+                }
+            }
+        }.start()
     }
 
     // ------------------------------------------------------------------ küçük yardımcılar
