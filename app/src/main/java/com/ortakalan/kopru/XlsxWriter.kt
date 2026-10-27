@@ -202,8 +202,11 @@ object XlsxWriter {
         val rowPattern = Regex("""<row\b[^>]*r="(\d+)"[^>]*>.*?</row>""", RegexOption.DOT_MATCHES_ALL)
         for (match in rowPattern.findAll(sheetXml)) {
             sb.append(sheetXml, pos, match.range.first)
-            val rowNum = match.groupValues[1].toIntOrNull() ?: run {
-                sb.append(match.value); pos = match.range.last + 1; continue
+            val rowNum = match.groupValues[1].toIntOrNull()
+            if (rowNum == null) {
+                sb.append(match.value)
+                pos = match.range.last + 1
+                continue
             }
             val rowEdits = byRow[rowNum - 1] // 0-tabanlı → 1-tabanlı
             if (rowEdits == null) {
