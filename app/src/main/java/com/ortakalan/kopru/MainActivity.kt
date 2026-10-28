@@ -484,14 +484,11 @@ class MainActivity : Activity() {
             Thread {
                 try {
                     val ctx = SmbTools.openContext(c[0], c[1], c[2])
-                    val list = try {
-                        SmbTools.list(url, ctx)
+                    val list: List<SmbTools.Entry>
+                    try {
+                        list = SmbTools.list(url, ctx)
                     } finally {
-                        try {
-                            ctx.close()
-                        } catch (e: Throwable) {
-                            // kapatma hatası önemsiz
-                        }
+                        try { ctx.close() } catch (e: Throwable) { }
                     }
                     ui.post {
                         cur = url
@@ -1116,20 +1113,27 @@ class MainActivity : Activity() {
 
         Thread {
             try {
+                val src = savedXlsx
+                if (!src.exists()) throw IllegalStateException("Kaynak dosya bulunamadı: ${src.name}")
                 val tmp = File(filesDir, "edit_tmp.xlsx")
-                XlsxWriter.apply(savedXlsx, tmp, sheetIndex, editsCopy)
+                tmp.delete()
 
-                // SMB'ye yükle
+                // 1) Değişiklikleri yeni bir geçici dosyaya uygula
+                XlsxWriter.apply(src, tmp, sheetIndex, editsCopy)
+
+                // 2) SMB'ye yükle
                 val ctx = SmbTools.openContext(c[0], c[1], c[2])
                 try {
                     val smbFile = jcifs.smb.SmbFile(url, ctx)
                     smbFile.getOutputStream().use { os ->
                         tmp.inputStream().use { ins -> ins.copyTo(os) }
                     }
-                    // Başarıyla kaydedildi: savedXlsx'i güncelle
-                    savedXlsx.delete()
-                    tmp.renameTo(savedXlsx)
-                    // Stat güncelle (dosya değişti)
+                    // 3) SMB yüklemesi başarılı — şimdi yerel kopyayı güncelle
+                    //    copyTo her zaman çalışır; rename farklı fs'de başarısız olabilir
+                    tmp.copyTo(src, overwrite = true)
+                    tmp.delete()
+
+                    // Stat güncelle (dosya değişti, poller kendi dosyamızı tekrar indirmesin)
                     val st = SmbTools.stat(url, ctx)
                     prefs.edit().putLong("src_m", st[0]).putLong("src_s", st[1]).apply()
                     baseM = st[0]; baseS = st[1]
