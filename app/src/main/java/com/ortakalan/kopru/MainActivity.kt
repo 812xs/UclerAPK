@@ -1090,8 +1090,7 @@ class MainActivity : Activity() {
                 pendingEdits[addr] = edit
                 unsaved = true
                 grid.updateCell(row1, col0, newText, selectedBgColor, selectedFontColor)
-                toast("Değişiklik kaydedildi")
-                // Otomatik SMB'ye kaydet
+                // Otomatik SMB'ye kaydet (başarı mesajı saveEditsToSmb içinde gösterilir)
                 saveEditsToSmb()
             }
             .setNegativeButton("Vazgeç", null)
