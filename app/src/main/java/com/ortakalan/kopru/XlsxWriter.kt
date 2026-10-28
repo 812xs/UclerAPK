@@ -189,7 +189,8 @@ object XlsxWriter {
         val len = sheetXml.length
 
         while (i < len) {
-            val rowOpen = sheetXml.indexOf("<row", i)
+            // Sadece gerçek <row> veya <row ...> tag'larını yakala; <rowBreaks> vs. değil
+            val rowOpen = findTag(sheetXml, "<row", i)
             if (rowOpen < 0) {
                 sb.append(sheetXml, i, len)
                 break
@@ -286,16 +287,9 @@ object XlsxWriter {
         val len = inner.length
 
         while (i < len) {
-            val cOpen = inner.indexOf("<c", i)
+            // Sadece gerçek <c> veya <c ...> tag'larını yakala
+            val cOpen = findTag(inner, "<c", i)
             if (cOpen < 0) { sb.append(inner, i, len); break }
-
-            // <c ile başlayan ama <calcChain gibi başka tag değil mi?
-            val nextCh = if (cOpen + 2 < len) inner[cOpen + 2] else ' '
-            if (nextCh != ' ' && nextCh != '\t' && nextCh != '\n' && nextCh != '\r' && nextCh != '>') {
-                sb.append(inner, i, cOpen + 1)
-                i = cOpen + 1
-                continue
-            }
 
             sb.append(inner, i, cOpen)
 
@@ -443,6 +437,25 @@ object XlsxWriter {
     // -------------------------------------------------------------------------
     // Küçük yardımcılar
     // -------------------------------------------------------------------------
+
+    /**
+     * xml içinde [from] konumundan itibaren tam olarak [prefix] ile başlayan
+     * bir tag açılışını bulur. Tag adından sonra gelen karakter boşluk, '>', '\t',
+     * '\n', '\r' veya '/' olmalıdır — yoksa prefix farklı bir tag adının başı demektir.
+     * Örnek: findTag(xml, "<row", 0) "<rowBreaks>" veya "<rowHierarchy>" eşleşmez.
+     */
+    private fun findTag(xml: String, prefix: String, from: Int): Int {
+        var pos = from
+        val prefLen = prefix.length
+        while (true) {
+            val idx = xml.indexOf(prefix, pos)
+            if (idx < 0) return -1
+            val afterIdx = idx + prefLen
+            val next = if (afterIdx < xml.length) xml[afterIdx] else ' '
+            if (next == ' ' || next == '>' || next == '\t' || next == '\n' || next == '\r' || next == '/') return idx
+            pos = idx + 1
+        }
+    }
 
     private fun parseCount(xml: String, tag: String): Int =
         Regex("""<$tag\b[^>]*\bcount="(\d+)"""").find(xml)?.groupValues?.get(1)?.toIntOrNull() ?: 0
