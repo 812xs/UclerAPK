@@ -24,7 +24,9 @@ object XlsxWriter {
     data class CellEdit(
         val text: String? = null,
         val bgColor: Int? = null,
-        val fontColor: Int? = null
+        val fontColor: Int? = null,
+        /** 0 = genel, 1 = sol, 2 = orta, 3 = sağ; null = değiştirme */
+        val hAlign: Int? = null
     )
 
     // -------------------------------------------------------------------------
@@ -79,13 +81,15 @@ object XlsxWriter {
         edits: Map<CellAddr, CellEdit>
     ): Pair<String, Map<CellAddr, Int>> {
 
-        // Renk gerektiren edit'leri topla
-        data class ColorKey(val bg: Int?, val fg: Int?)
-        val colorEdits = edits.filter { (_, e) -> e.bgColor != null || e.fontColor != null }
-        if (colorEdits.isEmpty()) return xml to emptyMap()
+        // Stil gerektiren edit'leri topla (renk veya hizalama olan)
+        data class StyleKey(val bg: Int?, val fg: Int?, val hAlign: Int?)
+        val styleEdits = edits.filter { (_, e) ->
+            e.bgColor != null || e.fontColor != null || (e.hAlign != null && e.hAlign != 0)
+        }
+        if (styleEdits.isEmpty()) return xml to emptyMap()
 
-        val needed = colorEdits.values
-            .map { ColorKey(it.bgColor, it.fontColor) }
+        val needed = styleEdits.values
+            .map { StyleKey(it.bgColor, it.fontColor, it.hAlign) }
             .toSet()
 
         // Mevcut sayıları bul
@@ -93,7 +97,7 @@ object XlsxWriter {
         var fillCount = attrInt(xml, "fills",    "count") ?: 2
         var xfCount   = attrInt(xml, "cellXfs",  "count") ?: 1
 
-        val keyToXf = mutableMapOf<ColorKey, Int>()
+        val keyToXf = mutableMapOf<StyleKey, Int>()
         val newFonts = StringBuilder()
         val newFills = StringBuilder()
         val newXfs   = StringBuilder()
@@ -125,18 +129,28 @@ object XlsxWriter {
                 applyFill = false
             }
 
+            // --- hizalama ---
+            val alignStr = when (key.hAlign) {
+                1 -> "left"
+                2 -> "center"
+                3 -> "right"
+                else -> null
+            }
+
             // --- xf ---
             val xfAttrs = buildString {
                 append("""numFmtId="0" fontId="$fontId" fillId="$fillId" borderId="0" xfId="0"""")
                 if (applyFont) append(""" applyFont="1"""")
                 if (applyFill) append(""" applyFill="1"""")
+                if (alignStr != null) append(""" applyAlignment="1"""")
             }
-            newXfs.append("<xf $xfAttrs/>")
+            val alignChild = if (alignStr != null) """<alignment horizontal="$alignStr"/>""" else ""
+            newXfs.append("<xf $xfAttrs>$alignChild</xf>")
             keyToXf[key] = xfCount++
         }
 
-        val styleMap: Map<CellAddr, Int> = colorEdits.mapNotNull { (addr, edit) ->
-            val key = ColorKey(edit.bgColor, edit.fontColor)
+        val styleMap: Map<CellAddr, Int> = styleEdits.mapNotNull { (addr, edit) ->
+            val key = StyleKey(edit.bgColor, edit.fontColor, edit.hAlign)
             val idx = keyToXf[key] ?: return@mapNotNull null
             addr to idx
         }.toMap()

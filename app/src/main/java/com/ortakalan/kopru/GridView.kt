@@ -37,7 +37,7 @@ class GridView(context: Context) : View(context) {
     var onCellDoubleTap: ((row1: Int, col0: Int, currentText: String, cell: Cell?) -> Unit)? = null
 
     /** Düzenleme modu açık mı? Açıkken tek dokunuş köprü açmaz, hücreyi seçer. */
-    var editMode = false
+    var editMode = true // Çift tıkla düzenleme her zaman aktif
         set(v) { field = v; invalidate() }
 
     private var data: SheetData? = null

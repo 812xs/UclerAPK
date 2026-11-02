@@ -56,7 +56,7 @@ class MainActivity : Activity() {
     private lateinit var banner: LinearLayout
     private lateinit var refreshBtn: TextView
     private lateinit var filterBtn: TextView
-    private lateinit var editModeBtn: TextView
+    // editModeBtn kaldırıldı — çift tıkla düzenleme her zaman aktif
     private val ui = Handler(Looper.getMainLooper())
 
     private var sheets: List<SheetInfo> = emptyList()
@@ -245,12 +245,6 @@ class MainActivity : Activity() {
         val flp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         flp.leftMargin = dp(8)
         nav.addView(filterBtn, flp)
-
-        editModeBtn = navButton("✏ Düzenle") { toggleEditMode() }
-        editModeBtn.visibility = View.GONE
-        val elp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-        elp.leftMargin = dp(8)
-        nav.addView(editModeBtn, elp)
 
         addNav("Aç") { chooseOpenSource() }
         addNav("Sayfa") { chooseSheet() }
@@ -759,7 +753,6 @@ class MainActivity : Activity() {
         val active = grid.activeFilterCount()
         if (current == null) {
             filterBtn.visibility = View.GONE
-            editModeBtn.visibility = View.GONE
         } else {
             if (active > 0) {
                 filterBtn.text = "Filtreyi temizle"
@@ -770,10 +763,6 @@ class MainActivity : Activity() {
             } else {
                 filterBtn.visibility = View.GONE
             }
-            editModeBtn.visibility = View.VISIBLE
-            editModeBtn.text = if (grid.editMode) "✏ Düzenleniyor" else "✏ Düzenle"
-            editModeBtn.setTextColor(if (grid.editMode) 0xFFFFFFFF.toInt() else 0xFF1A73E8.toInt())
-            editModeBtn.setBackgroundColor(if (grid.editMode) 0xFF1A73E8.toInt() else android.graphics.Color.TRANSPARENT)
         }
         updateStatus()
     }
@@ -945,30 +934,90 @@ class MainActivity : Activity() {
 
     // ------------------------------------------------------------------ xlsx düzenleme
 
-    private fun toggleEditMode() {
-        if (current == null) return
-        grid.editMode = !grid.editMode
-        if (!grid.editMode && unsaved) {
-            // Düzenleme modundan çıkarken kaydedilmemiş değişiklik varsa kaydet
-            saveEditsToSmb()
+    /** Renk seçici grid (4 sütun, renk listesi) inşa eder; seçilen renk [onPick]'e iletilir. */
+    private fun buildColorGrid(
+        colors: List<Int?>,
+        initialColor: Int?,
+        btnSize: Int = dp(36),
+        onPick: (Int?) -> Unit
+    ): Pair<LinearLayout, () -> Unit> {
+        val wrapper = LinearLayout(this)
+        wrapper.orientation = LinearLayout.VERTICAL
+
+        val btnRefs = mutableListOf<Pair<Int?, TextView>>()
+        var row: LinearLayout? = null
+        var colInRow = 0
+        val cols = 5
+
+        fun markSelected(color: Int?) {
+            for ((c, b) in btnRefs) {
+                b.alpha = if (c == color) 1f else 0.5f
+                b.scaleX = if (c == color) 1.15f else 1f
+                b.scaleY = if (c == color) 1.15f else 1f
+            }
         }
-        refreshFilterUi()
-        if (grid.editMode) {
-            toastLong("Hücreye çift dokunun: metin girin veya renk seçin")
+
+        for (color in colors) {
+            if (colInRow == 0) {
+                row = LinearLayout(this)
+                row.orientation = LinearLayout.HORIZONTAL
+                wrapper.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            }
+            val btn = TextView(this)
+            btn.gravity = Gravity.CENTER
+            btn.textSize = 12f
+            val lp = LinearLayout.LayoutParams(btnSize, btnSize)
+            lp.rightMargin = dp(4)
+            lp.bottomMargin = dp(4)
+            if (color == null) {
+                btn.text = "✕"
+                btn.setTextColor(Color.DKGRAY)
+                btn.background = rounded(0xFFEEEEEE.toInt(), 6)
+            } else {
+                // Siyah/beyaz üzerinde okunabilir iç metin yok, sadece renk kutusu
+                btn.text = ""
+                btn.background = rounded(color, 6)
+            }
+            btn.alpha = if (color == initialColor) 1f else 0.5f
+            btnRefs.add(color to btn)
+            val c = color
+            btn.setOnClickListener {
+                onPick(c)
+                markSelected(c)
+            }
+            row!!.addView(btn, lp)
+            colInRow = (colInRow + 1) % cols
         }
+        // İlk seçimi işaretle
+        markSelected(initialColor)
+        return wrapper to { markSelected(initialColor) }
     }
 
     private fun showCellEditDialog(row1: Int, col0: Int, currentText: String, cell: Cell?) {
         if (current == null) return
+
+        // Mevcut hücre stilini oku (varsayılan değerler için)
+        val d = current!!
+        val cellStyle = cell?.style?.let { d.styles.getOrNull(it) }
+        val initBg    = cellStyle?.fillColor?.takeIf { it != 0 }
+        val initFg    = cellStyle?.fontColor?.takeIf { it != 0 && it != Color.BLACK }
+        val initAlign = cellStyle?.hAlign ?: 0
+
+        // Seçili değerler (başlangıçta mevcut değer)
+        var selectedBgColor: Int?   = initBg
+        var selectedFontColor: Int? = initFg
+        var selectedAlign: Int      = initAlign
+
         val col = LinearLayout(this)
         col.orientation = LinearLayout.VERTICAL
         col.setPadding(dp(20), dp(14), dp(20), dp(4))
 
-        // Metin giriş alanı
+        // ── Metin ──────────────────────────────────────────────────────────────
         val etLabel = TextView(this)
         etLabel.text = "Hücre metni"
         etLabel.setTextColor(Color.BLACK)
         etLabel.textSize = 13f
+        etLabel.setTypeface(etLabel.typeface, android.graphics.Typeface.BOLD)
         col.addView(etLabel)
 
         val et = EditText(this)
@@ -976,102 +1025,86 @@ class MainActivity : Activity() {
         et.setSingleLine(false)
         et.minLines = 2
         et.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
-        col.addView(et, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        val etlp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        etlp.topMargin = dp(4)
+        col.addView(et, etlp)
 
-        // Arka plan rengi seçici
-        val bgLabel = TextView(this)
-        bgLabel.text = "Arka plan rengi"
-        bgLabel.setTextColor(Color.BLACK)
-        bgLabel.textSize = 13f
-        val lpBg = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-        lpBg.topMargin = dp(12)
-        col.addView(bgLabel, lpBg)
+        // ── Bölüm başlığı yardımcısı ───────────────────────────────────────────
+        fun addSectionLabel(text: String) {
+            val tv = TextView(this)
+            tv.text = text
+            tv.setTextColor(Color.BLACK)
+            tv.textSize = 13f
+            tv.setTypeface(tv.typeface, android.graphics.Typeface.BOLD)
+            val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            lp.topMargin = dp(14)
+            col.addView(tv, lp)
+        }
 
-        val bgRow = LinearLayout(this)
-        bgRow.orientation = LinearLayout.HORIZONTAL
-        val bgColors = listOf(
-            null to "Yok",
-            0xFFFFFF00.toInt() to "Sarı",
-            0xFF90EE90.toInt() to "Yeşil",
-            0xFFADD8E6.toInt() to "Mavi",
-            0xFFFFB6C1.toInt() to "Pembe",
-            0xFFFFD700.toInt() to "Altın",
-            0xFFFF6347.toInt() to "Kırmızı",
-            0xFFD3D3D3.toInt() to "Gri"
-        )
-        var selectedBgColor: Int? = null
-        val bgBtns = mutableListOf<TextView>()
-        for ((color, name) in bgColors) {
+        // ── Hizalama ───────────────────────────────────────────────────────────
+        addSectionLabel("Hizalama")
+
+        val alignRow = LinearLayout(this)
+        alignRow.orientation = LinearLayout.HORIZONTAL
+        val alignItems = listOf(0 to "Genel", 1 to "◀ Sol", 2 to "■ Orta", 3 to "Sağ ▶")
+        val alignBtns = mutableListOf<TextView>()
+
+        fun refreshAlignBtns() {
+            alignBtns.forEachIndexed { i, b ->
+                val isSelected = alignItems[i].first == selectedAlign
+                b.background = rounded(if (isSelected) 0xFF217346.toInt() else 0xFFDDDDDD.toInt(), 8)
+                b.setTextColor(if (isSelected) Color.WHITE else Color.BLACK)
+            }
+        }
+
+        for ((value, label) in alignItems) {
             val btn = TextView(this)
-            btn.text = if (color == null) "✕" else "  "
+            btn.text = label
             btn.textSize = 13f
             btn.gravity = Gravity.CENTER
-            val size = dp(34)
-            val lp = LinearLayout.LayoutParams(size, size)
+            btn.setPadding(dp(10), dp(7), dp(10), dp(7))
+            val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             lp.rightMargin = dp(6)
-            btn.background = rounded(color ?: 0xFFEEEEEE.toInt(), 6)
-            if (color == null) btn.setTextColor(Color.BLACK)
-            val c = color
+            val v = value
             btn.setOnClickListener {
-                selectedBgColor = c
-                bgBtns.forEach { b -> b.alpha = 0.55f }
-                btn.alpha = 1f
+                selectedAlign = v
+                refreshAlignBtns()
             }
-            btn.alpha = if (color == selectedBgColor) 1f else 0.55f
-            bgBtns.add(btn)
-            bgRow.addView(btn, lp)
+            alignBtns.add(btn)
+            alignRow.addView(btn, lp)
         }
-        col.addView(bgRow)
+        // İlk boyamayı uygula
+        refreshAlignBtns()
+        col.addView(alignRow)
 
-        // Yazı rengi seçici
-        val fontLabel = TextView(this)
-        fontLabel.text = "Yazı rengi"
-        fontLabel.setTextColor(Color.BLACK)
-        fontLabel.textSize = 13f
-        val lpFont = LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-        lpFont.topMargin = dp(12)
-        col.addView(fontLabel, lpFont)
-
-        val fontRow = LinearLayout(this)
-        fontRow.orientation = LinearLayout.HORIZONTAL
-        val fontColors = listOf(
-            null to "Yok",
-            0xFF000000.toInt() to "Siyah",
-            0xFFFFFFFF.toInt() to "Beyaz",
-            0xFFFF0000.toInt() to "Kırmızı",
-            0xFF0000FF.toInt() to "Mavi",
-            0xFF008000.toInt() to "Yeşil",
-            0xFFFFA500.toInt() to "Turuncu",
-            0xFF800080.toInt() to "Mor"
+        // ── Arka plan rengi ────────────────────────────────────────────────────
+        val bgColors: List<Int?> = listOf(
+            null,
+            0xFFFFFFFF.toInt(), 0xFFF2F2F2.toInt(), 0xFFD9D9D9.toInt(), 0xFF595959.toInt(),
+            0xFF000000.toInt(), 0xFFFF0000.toInt(), 0xFFFF6347.toInt(), 0xFFFF8C00.toInt(),
+            0xFFFFD700.toInt(), 0xFFFFFF00.toInt(), 0xFF90EE90.toInt(), 0xFF008000.toInt(),
+            0xFF00CED1.toInt(), 0xFFADD8E6.toInt(), 0xFF0000FF.toInt(), 0xFF000080.toInt(),
+            0xFFDA70D6.toInt(), 0xFF800080.toInt(), 0xFFFFB6C1.toInt(), 0xFFA52A2A.toInt()
         )
-        var selectedFontColor: Int? = null
-        val fontBtns = mutableListOf<TextView>()
-        for ((color, name) in fontColors) {
-            val btn = TextView(this)
-            btn.text = if (color == null) "✕" else "A"
-            btn.textSize = 13f
-            btn.gravity = Gravity.CENTER
-            val size = dp(34)
-            val lp = LinearLayout.LayoutParams(size, size)
-            lp.rightMargin = dp(6)
-            val bgC = when {
-                color == null -> 0xFFEEEEEE.toInt()
-                color == 0xFFFFFFFF.toInt() -> 0xFF888888.toInt()
-                else -> color
-            }
-            btn.background = rounded(bgC, 6)
-            btn.setTextColor(if (color == 0xFF000000.toInt() || color == null) Color.BLACK else Color.WHITE)
-            val c = color
-            btn.setOnClickListener {
-                selectedFontColor = c
-                fontBtns.forEach { b -> b.alpha = 0.55f }
-                btn.alpha = 1f
-            }
-            btn.alpha = if (color == selectedFontColor) 1f else 0.55f
-            fontBtns.add(btn)
-            fontRow.addView(btn, lp)
+        addSectionLabel("Arka plan rengi")
+        val (bgGrid, _) = buildColorGrid(bgColors, selectedBgColor) { c ->
+            selectedBgColor = c
         }
-        col.addView(fontRow)
+        col.addView(bgGrid)
+
+        // ── Yazı rengi ─────────────────────────────────────────────────────────
+        val fontColors: List<Int?> = listOf(
+            null,
+            0xFF000000.toInt(), 0xFF595959.toInt(), 0xFFFFFFFF.toInt(), 0xFFFF0000.toInt(),
+            0xFFFF6347.toInt(), 0xFFFF8C00.toInt(), 0xFFFFD700.toInt(), 0xFF008000.toInt(),
+            0xFF90EE90.toInt(), 0xFF00CED1.toInt(), 0xFF0000FF.toInt(), 0xFF000080.toInt(),
+            0xFFDA70D6.toInt(), 0xFF800080.toInt(), 0xFFFFB6C1.toInt(), 0xFFA52A2A.toInt()
+        )
+        addSectionLabel("Yazı rengi")
+        val (fgGrid, _) = buildColorGrid(fontColors, selectedFontColor) { c ->
+            selectedFontColor = c
+        }
+        col.addView(fgGrid)
 
         val sv = ScrollView(this)
         sv.addView(col)
@@ -1084,13 +1117,13 @@ class MainActivity : Activity() {
                 val edit = XlsxWriter.CellEdit(
                     text = newText,
                     bgColor = selectedBgColor,
-                    fontColor = selectedFontColor
+                    fontColor = selectedFontColor,
+                    hAlign = if (selectedAlign != 0) selectedAlign else null
                 )
-                val addr = XlsxWriter.CellAddr(row1 - 1, col0) // XlsxWriter 0-based row
+                val addr = XlsxWriter.CellAddr(row1 - 1, col0)
                 pendingEdits[addr] = edit
                 unsaved = true
                 grid.updateCell(row1, col0, newText, selectedBgColor, selectedFontColor)
-                // Otomatik SMB'ye kaydet (başarı mesajı saveEditsToSmb içinde gösterilir)
                 saveEditsToSmb()
             }
             .setNegativeButton("Vazgeç", null)
@@ -1135,12 +1168,19 @@ class MainActivity : Activity() {
                     // Stat güncelle (dosya değişti, poller kendi dosyamızı tekrar indirmesin)
                     val st = SmbTools.stat(url, ctx)
                     prefs.edit().putLong("src_m", st[0]).putLong("src_s", st[1]).apply()
-                    baseM = st[0]; baseS = st[1]
+                    // Long.MAX_VALUE: poller bu değeri asla eşleştirmez → banner çıkmaz
+                    baseM = Long.MAX_VALUE; baseS = Long.MAX_VALUE
+                    val newM = st[0]; val newS = st[1]
+                    val snapIdx = sheetIndex
                     ui.post {
+                        // Stat'ı gerçek değere set et; poller artık yeni değeri bilir
+                        baseM = newM; baseS = newS
                         pendingEdits.clear()
                         unsaved = false
                         hideBanner()
-                        toast("Sunucuya kaydedildi ✓")
+                        // Arka planda yenile — kullanıcıya bildir, yenile butonuna gerek yok
+                        loadParsed(snapIdx, keepPosition = true)
+                        toast("Kaydedildi, yenileniyor...")
                     }
                 } finally {
                     try { ctx.close() } catch (e: Throwable) {}
