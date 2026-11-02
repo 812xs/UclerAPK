@@ -26,7 +26,9 @@ object XlsxWriter {
         val bgColor: Int? = null,
         val fontColor: Int? = null,
         /** 0 = genel, 1 = sol, 2 = orta, 3 = sağ; null = değiştirme */
-        val hAlign: Int? = null
+        val hAlign: Int? = null,
+        /** Hücreye eklenecek kenarlar: left, right, top, bottom. */
+        val borderSides: Set<String>? = null
     )
 
     // -------------------------------------------------------------------------
@@ -81,65 +83,74 @@ object XlsxWriter {
         edits: Map<CellAddr, CellEdit>
     ): Pair<String, Map<CellAddr, Int>> {
 
-        // Stil gerektiren edit'leri topla (renk veya hizalama olan)
-        data class StyleKey(val bg: Int?, val fg: Int?, val hAlign: Int?)
+        data class StyleKey(val bg: Int?, val fg: Int?, val hAlign: Int?, val borderSides: Set<String>)
         val styleEdits = edits.filter { (_, e) ->
-            e.bgColor != null || e.fontColor != null || (e.hAlign != null && e.hAlign != 0)
+            e.bgColor != null || e.fontColor != null ||
+                (e.hAlign != null && e.hAlign != 0) ||
+                !e.borderSides.isNullOrEmpty()
         }
         if (styleEdits.isEmpty()) return xml to emptyMap()
 
-        val needed = styleEdits.values
-            .map { StyleKey(it.bgColor, it.fontColor, it.hAlign) }
-            .toSet()
+        val needed = styleEdits.values.map {
+            StyleKey(it.bgColor, it.fontColor, it.hAlign, it.borderSides ?: emptySet())
+        }.toSet()
 
-        // Mevcut sayıları bul
-        var fontCount = attrInt(xml, "fonts",    "count") ?: 1
-        var fillCount = attrInt(xml, "fills",    "count") ?: 2
-        var xfCount   = attrInt(xml, "cellXfs",  "count") ?: 1
+        var fontCount = attrInt(xml, "fonts", "count") ?: 1
+        var fillCount = attrInt(xml, "fills", "count") ?: 2
+        var borderCount = attrInt(xml, "borders", "count") ?: 1
+        var xfCount = attrInt(xml, "cellXfs", "count") ?: 1
 
         val keyToXf = mutableMapOf<StyleKey, Int>()
         val newFonts = StringBuilder()
         val newFills = StringBuilder()
-        val newXfs   = StringBuilder()
+        val newBorders = StringBuilder()
+        val newXfs = StringBuilder()
 
         for (key in needed) {
-            // --- font ---
             val fontId: Int
             val applyFont: Boolean
             val fg = key.fg
             if (fg != null && fg != 0 && fg != Color.TRANSPARENT) {
                 newFonts.append("""<font><sz val="11"/><color rgb="FF${colorHex(fg)}"/><name val="Calibri"/></font>""")
-                fontId    = fontCount++
+                fontId = fontCount++
                 applyFont = true
             } else {
-                fontId    = 0
+                fontId = 0
                 applyFont = false
             }
 
-            // --- fill ---
             val fillId: Int
             val applyFill: Boolean
             val bg = key.bg
             if (bg != null && bg != 0 && bg != Color.TRANSPARENT) {
                 newFills.append("""<fill><patternFill patternType="solid"><fgColor rgb="FF${colorHex(bg)}"/><bgColor indexed="64"/></patternFill></fill>""")
-                fillId    = fillCount++
+                fillId = fillCount++
                 applyFill = true
             } else {
-                fillId    = 0
+                fillId = 0
                 applyFill = false
             }
 
-            // --- hizalama ---
+            val borderId: Int
+            if (key.borderSides.isNotEmpty()) {
+                val left = if ("left" in key.borderSides) """<left style="thin"><color rgb="FF000000"/></left>""" else "<left/>"
+                val right = if ("right" in key.borderSides) """<right style="thin"><color rgb="FF000000"/></right>""" else "<right/>"
+                val top = if ("top" in key.borderSides) """<top style="thin"><color rgb="FF000000"/></top>""" else "<top/>"
+                val bottom = if ("bottom" in key.borderSides) """<bottom style="thin"><color rgb="FF000000"/></bottom>""" else "<bottom/>"
+                newBorders.append("<border>$left$right$top$bottom<diagonal/></border>")
+                borderId = borderCount++
+            } else {
+                borderId = 0
+            }
+
             val alignStr = when (key.hAlign) {
                 1 -> "left"
                 2 -> "center"
                 3 -> "right"
                 else -> null
             }
-
-            // --- xf ---
             val xfAttrs = buildString {
-                append("""numFmtId="0" fontId="$fontId" fillId="$fillId" borderId="0" xfId="0"""")
+                append("""numFmtId="0" fontId="$fontId" fillId="$fillId" borderId="$borderId" xfId="0"""")
                 if (applyFont) append(""" applyFont="1"""")
                 if (applyFill) append(""" applyFill="1"""")
                 if (alignStr != null) append(""" applyAlignment="1"""")
@@ -149,26 +160,28 @@ object XlsxWriter {
             keyToXf[key] = xfCount++
         }
 
-        val styleMap: Map<CellAddr, Int> = styleEdits.mapNotNull { (addr, edit) ->
-            val key = StyleKey(edit.bgColor, edit.fontColor, edit.hAlign)
-            val idx = keyToXf[key] ?: return@mapNotNull null
-            addr to idx
+        val styleMap = styleEdits.mapNotNull { (addr, edit) ->
+            val key = StyleKey(edit.bgColor, edit.fontColor, edit.hAlign, edit.borderSides ?: emptySet())
+            (keyToXf[key] ?: return@mapNotNull null).let { addr to it }
         }.toMap()
 
         var result = xml
         if (newFonts.isNotEmpty()) {
-            result = insertBefore(result, "</fonts>",  newFonts.toString())
-            result = setAttrInt(result, "fonts",   "count", fontCount)
+            result = insertBefore(result, "</fonts>", newFonts.toString())
+            result = setAttrInt(result, "fonts", "count", fontCount)
         }
         if (newFills.isNotEmpty()) {
-            result = insertBefore(result, "</fills>",  newFills.toString())
-            result = setAttrInt(result, "fills",   "count", fillCount)
+            result = insertBefore(result, "</fills>", newFills.toString())
+            result = setAttrInt(result, "fills", "count", fillCount)
+        }
+        if (newBorders.isNotEmpty()) {
+            result = insertBefore(result, "</borders>", newBorders.toString())
+            result = setAttrInt(result, "borders", "count", borderCount)
         }
         if (newXfs.isNotEmpty()) {
             result = insertBefore(result, "</cellXfs>", newXfs.toString())
             result = setAttrInt(result, "cellXfs", "count", xfCount)
         }
-
         return result to styleMap
     }
 
