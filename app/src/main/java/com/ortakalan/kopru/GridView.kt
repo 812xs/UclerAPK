@@ -75,6 +75,7 @@ class GridView(context: Context) : View(context) {
 
     private var mergeAt = HashMap<Long, Merge>()
     private var covered = HashSet<Long>()
+    private val editedBorders = HashMap<Long, Array<BorderSide?>>()
 
     private val scroller = OverScroller(context)
 
@@ -593,6 +594,13 @@ class GridView(context: Context) : View(context) {
             var r: BorderSide? = st.right
             var t: BorderSide? = st.top
             var b: BorderSide? = st.bottom
+            val edited = editedBorders[key(it.rn, it.cell.col)]
+            if (edited != null) {
+                l = edited[0] ?: l
+                r = edited[1] ?: r
+                t = edited[2] ?: t
+                b = edited[3] ?: b
+            }
             if (mg != null) {
                 // Birleştirilmiş hücrede kenarlıklar dış kenardaki hücrelerin stilinde saklanır
                 val a0 = styleAt(d, mg.r1, mg.c1)
@@ -1056,7 +1064,7 @@ class GridView(context: Context) : View(context) {
     }
 
     /** Düzenleme sonrası veriyi güncelle (tek hücre) */
-    fun updateCell(row1: Int, col0: Int, newText: String, bgColor: Int?, fontColor: Int?) {
+    fun updateCell(row1: Int, col0: Int, newText: String, bgColor: Int?, fontColor: Int?, borderSides: Set<String> = emptySet()) {
         val d = data ?: return
         val rd = d.rowsByNumber.getOrNull(row1) ?: return
         val oldCell = rd.cellAt(col0)
@@ -1077,6 +1085,14 @@ class GridView(context: Context) : View(context) {
             cells.sortBy { it.col }
         }
         rd.cells = cells.toTypedArray()
+        if (borderSides.isNotEmpty()) {
+            val sides = arrayOfNulls<BorderSide>(4)
+            if ("left" in borderSides) sides[0] = BorderSide(1, Color.BLACK)
+            if ("right" in borderSides) sides[1] = BorderSide(1, Color.BLACK)
+            if ("top" in borderSides) sides[2] = BorderSide(1, Color.BLACK)
+            if ("bottom" in borderSides) sides[3] = BorderSide(1, Color.BLACK)
+            editedBorders[key(row1, col0)] = sides
+        }
         invalidate()
     }
 }
