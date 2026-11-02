@@ -29,6 +29,7 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.ScrollView
+import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.content.FileProvider
@@ -935,60 +936,159 @@ class MainActivity : Activity() {
     // ------------------------------------------------------------------ xlsx düzenleme
 
     /** Renk seçici grid (4 sütun, renk listesi) inşa eder; seçilen renk [onPick]'e iletilir. */
+    private fun showColorPicker(initialColor: Int, onPick: (Int) -> Unit) {
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(12), dp(20), dp(8))
+        }
+        val preview = TextView(this).apply {
+            text = " "
+            gravity = Gravity.CENTER
+            background = rounded(initialColor, 8)
+            minHeight = dp(42)
+        }
+        content.addView(preview, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(42)))
+
+        var picked = initialColor
+        val channels = intArrayOf(Color.red(initialColor), Color.green(initialColor), Color.blue(initialColor))
+        val labels = listOf("Kırmızı", "Yeşil", "Mavi")
+        for (i in 0..2) {
+            val label = TextView(this).apply {
+                text = "${labels[i]}: ${channels[i]}"
+                setPadding(0, dp(10), 0, 0)
+            }
+            content.addView(label)
+            val seek = SeekBar(this).apply {
+                max = 255
+                progress = channels[i]
+            }
+            seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(bar: SeekBar?, value: Int, fromUser: Boolean) {
+                    channels[i] = value
+                    label.text = "${labels[i]}: $value"
+                    picked = Color.rgb(channels[0], channels[1], channels[2])
+                    preview.background = rounded(picked, 8)
+                }
+                override fun onStartTrackingTouch(bar: SeekBar?) {}
+                override fun onStopTrackingTouch(bar: SeekBar?) {}
+            })
+            content.addView(seek)
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("Renk seç")
+            .setView(content)
+            .setPositiveButton("Seç") { _, _ -> onPick(picked) }
+            .setNegativeButton("Vazgeç", null)
+            .show()
+    }
+
+    /** Renk kutuları: 12 sütun, seçili renkte tik; özel renk RGB paletiyle seçilir. */
     private fun buildColorGrid(
         colors: List<Int?>,
         initialColor: Int?,
         btnSize: Int = dp(36),
         onPick: (Int?) -> Unit
     ): Pair<LinearLayout, () -> Unit> {
-        val wrapper = LinearLayout(this)
-        wrapper.orientation = LinearLayout.VERTICAL
-
+        val wrapper = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val btnRefs = mutableListOf<Pair<Int?, TextView>>()
+        var selectedColor = initialColor
         var row: LinearLayout? = null
         var colInRow = 0
-        val cols = 5
+        val cols = 12
 
-        fun markSelected(color: Int?) {
-            for ((c, b) in btnRefs) {
-                b.alpha = if (c == color) 1f else 0.5f
-                b.scaleX = if (c == color) 1.15f else 1f
-                b.scaleY = if (c == color) 1.15f else 1f
-            }
-        }
-
-        for (color in colors) {
+        fun ensureRow() {
             if (colInRow == 0) {
-                row = LinearLayout(this)
-                row.orientation = LinearLayout.HORIZONTAL
+                row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
                 wrapper.addView(row, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
             }
-            val btn = TextView(this)
-            btn.gravity = Gravity.CENTER
-            btn.textSize = 12f
-            val lp = LinearLayout.LayoutParams(btnSize, btnSize)
-            lp.rightMargin = dp(4)
-            lp.bottomMargin = dp(4)
-            if (color == null) {
-                btn.text = "✕"
-                btn.setTextColor(Color.DKGRAY)
-                btn.background = rounded(0xFFEEEEEE.toInt(), 6)
-            } else {
-                // Siyah/beyaz üzerinde okunabilir iç metin yok, sadece renk kutusu
-                btn.text = ""
-                btn.background = rounded(color, 6)
+        }
+
+        fun markSelected(color: Int?) {
+            selectedColor = color
+            for ((c, button) in btnRefs) {
+                val selected = c == color
+                button.text = if (selected) "✓" else if (c == null) "✕" else ""
+                button.setTextColor(if (c == null || c == 0xFFFFFFFF.toInt() || c == 0xFFFFFF00.toInt() || c == 0xFFFFD700.toInt()) Color.BLACK else Color.WHITE)
             }
-            btn.alpha = if (color == initialColor) 1f else 0.5f
-            btnRefs.add(color to btn)
-            val c = color
-            btn.setOnClickListener {
-                onPick(c)
-                markSelected(c)
+        }
+
+        fun addButton(color: Int?, custom: Boolean = false) {
+            ensureRow()
+            val btn = TextView(this).apply {
+                gravity = Gravity.CENTER
+                textSize = 15f
+                background = if (custom) rounded(0xFFEEEEEE.toInt(), 6)
+                    else rounded(color ?: 0xFFEEEEEE.toInt(), 6)
+                if (color == null && !custom) {
+                    text = "✕"
+                    setTextColor(Color.DKGRAY)
+                }
+            }
+            val lp = LinearLayout.LayoutParams(btnSize, btnSize).apply {
+                rightMargin = dp(3)
+                bottomMargin = dp(4)
             }
             row!!.addView(btn, lp)
+            if (!custom) btnRefs.add(color to btn)
             colInRow = (colInRow + 1) % cols
+            return
         }
-        // İlk seçimi işaretle
+
+        colors.forEach { color ->
+            addButton(color)
+            val btn = row!!.getChildAt(row!!.childCount - 1) as TextView
+            btn.setOnClickListener {
+                onPick(color)
+                markSelected(color)
+            }
+        }
+
+        // Son kutucuk: özel renk paleti.
+        ensureRow()
+        val customBtn = TextView(this).apply {
+            text = "+"
+            textSize = 20f
+            gravity = Gravity.CENTER
+            setTextColor(Color.DKGRAY)
+            background = rounded(0xFFEEEEEE.toInt(), 6)
+        }
+        val customLp = LinearLayout.LayoutParams(btnSize, btnSize).apply {
+            rightMargin = dp(3)
+            bottomMargin = dp(4)
+        }
+        row!!.addView(customBtn, customLp)
+        customBtn.setOnClickListener {
+            showColorPicker(selectedColor ?: Color.BLACK) { picked ->
+                if (btnRefs.none { it.first == picked }) {
+                    val targetRow = if (colInRow == 0) {
+                        LinearLayout(this).apply {
+                            orientation = LinearLayout.HORIZONTAL
+                            wrapper.addView(this, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+                        }
+                    } else row!!
+                    val swatch = TextView(this).apply {
+                        gravity = Gravity.CENTER
+                        textSize = 15f
+                        background = rounded(picked, 6)
+                    }
+                    val lp = LinearLayout.LayoutParams(btnSize, btnSize).apply {
+                        rightMargin = dp(3)
+                        bottomMargin = dp(4)
+                    }
+                    targetRow.addView(swatch, lp)
+                    swatch.setOnClickListener {
+                        onPick(picked)
+                        markSelected(picked)
+                    }
+                    btnRefs.add(picked to swatch)
+                    if (colInRow == 0) colInRow = 1 else colInRow = (colInRow + 1) % cols
+                }
+                onPick(picked)
+                markSelected(picked)
+            }
+        }
+
         markSelected(initialColor)
         return wrapper to { markSelected(initialColor) }
     }
@@ -1093,13 +1193,7 @@ class MainActivity : Activity() {
         col.addView(bgGrid)
 
         // ── Yazı rengi ─────────────────────────────────────────────────────────
-        val fontColors: List<Int?> = listOf(
-            null,
-            0xFF000000.toInt(), 0xFF595959.toInt(), 0xFFFFFFFF.toInt(), 0xFFFF0000.toInt(),
-            0xFFFF6347.toInt(), 0xFFFF8C00.toInt(), 0xFFFFD700.toInt(), 0xFF008000.toInt(),
-            0xFF90EE90.toInt(), 0xFF00CED1.toInt(), 0xFF0000FF.toInt(), 0xFF000080.toInt(),
-            0xFFDA70D6.toInt(), 0xFF800080.toInt(), 0xFFFFB6C1.toInt(), 0xFFA52A2A.toInt()
-        )
+        val fontColors: List<Int?> = bgColors
         addSectionLabel("Yazı rengi")
         val (fgGrid, _) = buildColorGrid(fontColors, selectedFontColor) { c ->
             selectedFontColor = c
