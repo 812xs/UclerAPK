@@ -1025,7 +1025,7 @@ class GridView(context: Context) : View(context) {
 
         val cell = d.rowsByNumber.getOrNull(tr)?.cellAt(tc)
         onCellSelected?.invoke(colName(tc) + tr, cell?.text ?: "")
-        if (!editMode && cell != null && cell.link != null) onLinkTap?.invoke(cell)
+        if (cell != null && !cell.link.isNullOrBlank()) onLinkTap?.invoke(cell)
     }
 
     private fun handleDoubleTap(x: Float, y: Float) {
@@ -1048,6 +1048,10 @@ class GridView(context: Context) : View(context) {
         }
         selRow = tr; selCol = tc; invalidate()
         val cell = d.rowsByNumber.getOrNull(tr)?.cellAt(tc)
+        if (cell != null && !cell.link.isNullOrBlank()) {
+            onLinkTap?.invoke(cell)
+            return
+        }
         onCellDoubleTap?.invoke(tr, tc, cell?.text ?: "", cell)
     }
 
