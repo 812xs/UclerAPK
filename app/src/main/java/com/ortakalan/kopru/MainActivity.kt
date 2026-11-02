@@ -7,6 +7,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.graphics.Color
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.LinearGradient
+import android.graphics.Shader
 import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
@@ -937,46 +941,84 @@ class MainActivity : Activity() {
 
     /** Renk seçici grid (4 sütun, renk listesi) inşa eder; seçilen renk [onPick]'e iletilir. */
     private fun showColorPicker(initialColor: Int, onPick: (Int) -> Unit) {
+        val hsv = FloatArray(3)
+        Color.colorToHSV(initialColor, hsv)
+        var hue = hsv[0]
+        var saturation = hsv[1]
+        var value = hsv[2]
+        var picked = initialColor
+
         val content = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(20), dp(12), dp(20), dp(8))
+            setPadding(dp(18), dp(12), dp(18), dp(8))
         }
-        val preview = TextView(this).apply {
-            text = " "
-            gravity = Gravity.CENTER
-            background = rounded(initialColor, 8)
-            minHeight = dp(42)
-        }
-        content.addView(preview, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(42)))
+        val preview = View(this).apply { background = rounded(picked, 8) }
+        content.addView(preview, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(38)))
 
-        var picked = initialColor
-        val channels = intArrayOf(Color.red(initialColor), Color.green(initialColor), Color.blue(initialColor))
-        val labels = listOf("Kırmızı", "Yeşil", "Mavi")
-        for (i in 0..2) {
-            val label = TextView(this).apply {
-                text = "${labels[i]}: ${channels[i]}"
-                setPadding(0, dp(10), 0, 0)
+        val palette = object : View(this) {
+            private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+            private val marker = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                style = Paint.Style.STROKE
+                strokeWidth = dp(2).toFloat()
+                color = Color.WHITE
             }
-            content.addView(label)
-            val seek = SeekBar(this).apply {
-                max = 255
-                progress = channels[i]
+            override fun onDraw(canvas: Canvas) {
+                super.onDraw(canvas)
+                if (width <= 0 || height <= 0) return
+                val pureHue = Color.HSVToColor(floatArrayOf(hue, 1f, 1f))
+                paint.shader = LinearGradient(0f, 0f, width.toFloat(), 0f, Color.WHITE, pureHue, Shader.TileMode.CLAMP)
+                canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), paint)
+                paint.shader = LinearGradient(0f, 0f, 0f, height.toFloat(), 0x00000000, Color.BLACK, Shader.TileMode.CLAMP)
+                canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), paint)
+                paint.shader = null
+                val cx = saturation * width
+                val cy = (1f - value) * height
+                canvas.drawCircle(cx, cy, dp(7).toFloat(), marker)
             }
-            seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(bar: SeekBar?, value: Int, fromUser: Boolean) {
-                    channels[i] = value
-                    label.text = "${labels[i]}: $value"
-                    picked = Color.rgb(channels[0], channels[1], channels[2])
-                    preview.background = rounded(picked, 8)
+            override fun onTouchEvent(event: android.view.MotionEvent): Boolean {
+                when (event.action) {
+                    android.view.MotionEvent.ACTION_DOWN, android.view.MotionEvent.ACTION_MOVE -> {
+                        saturation = (event.x / width.coerceAtLeast(1)).coerceIn(0f, 1f)
+                        value = (1f - event.y / height.coerceAtLeast(1)).coerceIn(0f, 1f)
+                        picked = Color.HSVToColor(floatArrayOf(hue, saturation, value))
+                        preview.background = rounded(picked, 8)
+                        invalidate()
+                        return true
+                    }
                 }
-                override fun onStartTrackingTouch(bar: SeekBar?) {}
-                override fun onStopTrackingTouch(bar: SeekBar?) {}
-            })
-            content.addView(seek)
+                return true
+            }
         }
+        content.addView(palette, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(190)).apply {
+            topMargin = dp(12)
+        })
+
+        val hueLabel = TextView(this).apply {
+            text = "Renk tonu"
+            setTextColor(Color.BLACK)
+            textSize = 13f
+            setPadding(0, dp(10), 0, 0)
+        }
+        content.addView(hueLabel)
+        val hueBar = SeekBar(this).apply {
+            max = 360
+            progress = hue.toInt()
+        }
+        hueBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(bar: SeekBar?, progress: Int, fromUser: Boolean) {
+                hue = progress.toFloat()
+                picked = Color.HSVToColor(floatArrayOf(hue, saturation, value))
+                preview.background = rounded(picked, 8)
+                palette.invalidate()
+            }
+            override fun onStartTrackingTouch(bar: SeekBar?) {}
+            override fun onStopTrackingTouch(bar: SeekBar?) {}
+        })
+        content.addView(hueBar)
+        palette.invalidate()
 
         AlertDialog.Builder(this)
-            .setTitle("Renk seç")
+            .setTitle("Renk paleti")
             .setView(content)
             .setPositiveButton("Seç") { _, _ -> onPick(picked) }
             .setNegativeButton("Vazgeç", null)
@@ -1177,6 +1219,46 @@ class MainActivity : Activity() {
         refreshAlignBtns()
         col.addView(alignRow)
 
+        // ── Kenarlıklar ─────────────────────────────────────────────────────────
+        val selectedBorderSides = linkedSetOf<String>()
+        addSectionLabel("Hücre kenarlığı")
+        val borderRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val borderOptions = listOf(
+            "Sol" to "left", "Sağ" to "right", "Üst" to "top",
+            "Alt" to "bottom", "Her yeri" to "all"
+        )
+        val borderButtons = mutableListOf<Pair<String, TextView>>()
+        fun refreshBorderButtons() {
+            borderButtons.forEach { (side, button) ->
+                val active = if (side == "all") selectedBorderSides.size == 4 else side in selectedBorderSides
+                button.background = rounded(if (active) 0xFF217346.toInt() else 0xFFDDDDDD.toInt(), 7)
+                button.setTextColor(if (active) Color.WHITE else Color.BLACK)
+            }
+        }
+        borderOptions.forEach { (label, side) ->
+            val button = TextView(this).apply {
+                text = label
+                gravity = Gravity.CENTER
+                textSize = 12f
+                setPadding(dp(9), dp(8), dp(9), dp(8))
+            }
+            button.setOnClickListener {
+                if (side == "all") {
+                    if (selectedBorderSides.size == 4) selectedBorderSides.clear()
+                    else selectedBorderSides.addAll(listOf("left", "right", "top", "bottom"))
+                } else {
+                    if (!selectedBorderSides.add(side)) selectedBorderSides.remove(side)
+                }
+                refreshBorderButtons()
+            }
+            borderButtons.add(side to button)
+            borderRow.addView(button, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+                rightMargin = dp(5)
+            })
+        }
+        refreshBorderButtons()
+        col.addView(borderRow)
+
         // ── Arka plan rengi ────────────────────────────────────────────────────
         val bgColors: List<Int?> = listOf(
             null,
@@ -1212,12 +1294,13 @@ class MainActivity : Activity() {
                     text = newText,
                     bgColor = selectedBgColor,
                     fontColor = selectedFontColor,
-                    hAlign = if (selectedAlign != 0) selectedAlign else null
+                    hAlign = if (selectedAlign != 0) selectedAlign else null,
+                    borderSides = selectedBorderSides.toSet().takeIf { it.isNotEmpty() }
                 )
                 val addr = XlsxWriter.CellAddr(row1 - 1, col0)
                 pendingEdits[addr] = edit
                 unsaved = true
-                grid.updateCell(row1, col0, newText, selectedBgColor, selectedFontColor)
+                grid.updateCell(row1, col0, newText, selectedBgColor, selectedFontColor, selectedBorderSides)
                 saveEditsToSmb()
             }
             .setNegativeButton("Vazgeç", null)
